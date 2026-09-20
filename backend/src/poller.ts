@@ -1,12 +1,14 @@
 import { formatEther } from "viem";
+import { bscTestnet } from "viem/chains";
 import { publicClient, walletClient, config, account } from "./config.js";
 import { AEGIS_VAULT_ABI } from "./abi.js";
-import { analyzeRisk } from "./aiAnalyzer.js";
+import { runSecurityPipeline } from "./securityPipeline.js";
 import { saveDecision } from "./db.js";
 
 const contractAddress = config.CONTRACT_ADDRESS;
 
-// Penanda escrow yang sedang/sudah diproses di sesi ini, supaya tidak diproses dobel
+// Track escrows being processed or already done in this session.
+// Prevents double-processing across polling intervals.
 const processingOrDone = new Set<string>();
 
 async function checkAndProcessEscrows() {
@@ -20,25 +22,29 @@ async function checkAndProcessEscrows() {
     const newOnes = pendingIds.filter((id) => !processingOrDone.has(id));
 
     if (newOnes.length === 0) {
-      console.log(`[${new Date().toLocaleTimeString()}] Tidak ada escrow baru.`);
+      console.log(`[${new Date().toLocaleTimeString()}] No new escrows.`);
       return;
     }
 
-    console.log(`[${new Date().toLocaleTimeString()}] Ditemukan ${newOnes.length} escrow baru.`);
+    console.log(
+      `[${new Date().toLocaleTimeString()}] Found ${newOnes.length} new escrow(s).`
+    );
 
     for (const escrowId of newOnes) {
-      processingOrDone.add(escrowId); // tandai SEBELUM diproses, agar tidak diambil siklus berikutnya
+      // Mark BEFORE processing so concurrent intervals don't re-pick it
+      processingOrDone.add(escrowId);
       await processEscrow(escrowId);
     }
   } catch (err) {
-    console.error("Error saat polling:", err);
+    console.error("[Poller] Error during polling:", err);
   }
 }
 
 async function processEscrow(escrowId: `0x${string}`) {
-  console.log(`\n>> Memproses escrow: ${escrowId}`);
+  console.log(`\n>> Processing escrow: ${escrowId}`);
 
   try {
+    // ── Fetch escrow data from contract ──────────────────────────────────────
     const [sender, recipient, amount] = await publicClient.readContract({
       address: contractAddress,
       abi: AEGIS_VAULT_ABI,
@@ -46,62 +52,66 @@ async function processEscrow(escrowId: `0x${string}`) {
       args: [escrowId],
     });
 
-    const amountBNB = formatEther(amount);
-    console.log(`   Sender: ${sender}`);
-    console.log(`   Recipient: ${recipient}`);
-    console.log(`   Amount: ${amountBNB} BNB`);
+    const amountBNB = Number(formatEther(amount));
 
-    const txCount = await publicClient.getTransactionCount({ address: recipient });
-    const recipientAgeInfo =
-      txCount === 0 ? "address ini belum pernah melakukan transaksi apapun" : "address ini pernah aktif bertransaksi";
+    console.log(`   Sender    : ${sender}`);
+    console.log(`   Recipient : ${recipient}`);
+    console.log(`   Amount    : ${amountBNB} BNB`);
 
-    console.log(`   Menganalisis dengan AI...`);
-    const result = await analyzeRisk({
-      recipient,
-      amountBNB,
-      recipientTxCount: txCount,
-      recipientAgeInfo,
-    });
+    // ── Run security pipeline ─────────────────────────────────────────────────
+    const decision = await runSecurityPipeline(recipient, amountBNB);
 
-    console.log(`   Keputusan AI: eligible=${result.eligible}, confidence=${result.confidence}`);
-    console.log(`   Alasan: ${result.reasoning}`);
+    console.log(`\n[Final]   eligible=${decision.eligible} risk=${decision.riskLevel} decidedBy=${decision.decidedBy}`);
 
-    console.log(`   Mengirim keputusan ke smart contract...`);
+    // ── Send decision to smart contract ───────────────────────────────────────
+    console.log(`\n   Submitting decision to smart contract...`);
     const txHash = await walletClient.writeContract({
       address: contractAddress,
       abi: AEGIS_VAULT_ABI,
       functionName: "fulfillVerification",
-      args: [escrowId, result.eligible, result.reasoning],
+      args: [escrowId, decision.eligible, decision.reason],
+      chain: bscTestnet,
+      account,
     });
 
-    console.log(`   ✅ Transaksi terkirim: ${txHash}`);
+    console.log(`   ✅ Transaction submitted: ${txHash}`);
 
-    // Tunggu transaksi benar-benar terkonfirmasi sebelum lanjut ke escrow berikutnya
+    // Wait for on-chain confirmation before proceeding
     await publicClient.waitForTransactionReceipt({ hash: txHash });
+    console.log(`   ✅ Confirmed on-chain.`);
 
+    // ── Persist to database ───────────────────────────────────────────────────
     saveDecision({
       escrowId,
       sender,
       recipient,
-      amount: amountBNB,
-      eligible: result.eligible,
-      confidence: result.confidence,
-      reasoning: result.reasoning,
+      amount: amountBNB.toString(),
+      eligible: decision.eligible,
+      confidence: decision.confidence,
+      reasoning: decision.reason,
+      riskLevel: decision.riskLevel,
+      decidedBy: decision.decidedBy,
+      riskFlags: decision.evidence.security.riskFlags,
       txHash,
     });
 
-    console.log(`   Tersimpan ke database.\n`);
+    console.log(`   Saved to database.\n`);
   } catch (err) {
-    console.error(`   ❌ Gagal memproses escrow ${escrowId}:`, err instanceof Error ? err.message : err);
-    // Tetap tercatat di processingOrDone supaya tidak retry-loop terus menerus
+    console.error(
+      `   ❌ Failed to process escrow ${escrowId}:`,
+      err instanceof Error ? err.message : err
+    );
+    // Keep in processingOrDone to prevent retry loop
   }
 }
 
 export function startPolling() {
-  console.log(`🔮 AI Oracle Service dimulai.`);
-  console.log(`   Oracle address: ${account.address}`);
-  console.log(`   Contract address: ${contractAddress}`);
-  console.log(`   Interval polling: ${config.POLLING_INTERVAL_MS}ms\n`);
+  console.log(`🔮 AEGIS AI Oracle Service started.`);
+  console.log(`   Oracle address : ${account.address}`);
+  console.log(`   Contract       : ${contractAddress}`);
+  console.log(`   Poll interval  : ${config.POLLING_INTERVAL_MS}ms`);
+  console.log(`   LLM model      : ${config.OLLAMA_MODEL}`);
+  console.log(`   Confidence min : ${config.LLM_CONFIDENCE_THRESHOLD}\n`);
 
   checkAndProcessEscrows();
   setInterval(checkAndProcessEscrows, config.POLLING_INTERVAL_MS);

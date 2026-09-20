@@ -96,7 +96,7 @@ function EscrowHistory() {
                 </span>
               </p>
               <span className="text-xs text-[var(--text-secondary)] whitespace-nowrap">
-                {d.confidence}% yakin
+                {Math.round(d.confidence * 100)}% yakin
               </span>
             </div>
             <p className="text-xs text-[var(--text-secondary)] mt-1">

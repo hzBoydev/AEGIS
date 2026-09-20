@@ -1,3 +1,4 @@
+import React from "react";
 import type { Metadata } from "next";
 import { Playfair_Display, Inter } from "next/font/google";
 import "./globals.css";
@@ -19,7 +20,7 @@ export const metadata: Metadata = {
   description: "AI Agent yang menjaga keamanan transfer crypto secara otonom",
 };
 
-export default function RootLayout({ children }: LayoutProps<"/">) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html
       lang="en"
