@@ -69,6 +69,29 @@ const SIGNIFICANT_TRANSFER_BNB = Number(
   process.env.SIGNIFICANT_TRANSFER_BNB ?? 0.01
 );
 
+/**
+ * Threshold transfer "sangat besar" (BNB) — Rule 9.
+ * Transfer >= nilai ini ke alamat manapun -> eskalasi ke LLM meskipun lolos rule lain.
+ * Default: 1 BNB.
+ */
+const VERY_LARGE_TRANSFER_BNB = Number(
+  process.env.VERY_LARGE_TRANSFER_BNB ?? 1.0
+);
+
+/**
+ * Batas atas umur wallet (hari) untuk kategori "menengah" — Rule 10.
+ * Wallet berumur antara NEW_WALLET_DAYS dan nilai ini masih dianggap semi-baru.
+ * Default: 30 hari.
+ */
+const MEDIUM_WALLET_DAYS = Number(process.env.MEDIUM_WALLET_DAYS ?? 30);
+
+/**
+ * Threshold tx untuk wallet kategori menengah — Rule 10.
+ * Wallet menengah dengan txCount <= nilai ini dianggap low-activity.
+ * Default: 10 transaksi.
+ */
+const MEDIUM_TX_THRESHOLD = Number(process.env.MEDIUM_TX_THRESHOLD ?? 10);
+
 // ── Oracle Polling ────────────────────────────────────────────────────────────
 const POLLING_INTERVAL_MS = Number(process.env.POLLING_INTERVAL_MS ?? 8_000);
 
@@ -106,5 +129,8 @@ export const config = {
   NEW_WALLET_DAYS,
   LOW_TX_COUNT_THRESHOLD,
   SIGNIFICANT_TRANSFER_BNB,
+  VERY_LARGE_TRANSFER_BNB,
+  MEDIUM_WALLET_DAYS,
+  MEDIUM_TX_THRESHOLD,
   POLLING_INTERVAL_MS,
 } as const;
