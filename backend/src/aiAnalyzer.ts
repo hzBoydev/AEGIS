@@ -16,6 +16,8 @@ export interface LLMInput {
   amountBNB: number;
   security: SecurityCheckResult;
   intel: OnChainIntel;
+  /** Teks memori historis dari agentMemory — siap inject ke prompt */
+  memoryContext?: string;
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -72,6 +74,8 @@ Jumlah transfer : ${amountBNB} BNB
 ${goplusSection}
 
 ${bscscanSection}
+
+${input.memoryContext ?? "MEMORI HISTORIS AEGIS:\n  Alamat ini BELUM PERNAH dilihat sebelumnya. Ini adalah evaluasi pertama."}
 
 TUGAS:
 Berdasarkan bukti di atas, nilai risiko pelepasan dana kepada penerima ini.

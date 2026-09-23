@@ -40,4 +40,30 @@ export const AEGIS_VAULT_ABI = [
     stateMutability: "view",
     type: "function",
   },
+,
+  {
+    type: "event",
+    name: "EscrowCreated",
+    inputs: [
+      { indexed: true,  name: "escrowId",  type: "bytes32" },
+      { indexed: true,  name: "sender",    type: "address" },
+      { indexed: true,  name: "recipient", type: "address" },
+      { indexed: false, name: "amount",    type: "uint256" },
+    ],
+  },
+  {
+    type: "event",
+    name: "EscrowReleased",
+    inputs: [
+      { indexed: true, name: "escrowId", type: "bytes32" },
+    ],
+  },
+  {
+    type: "event",
+    name: "EscrowReverted",
+    inputs: [
+      { indexed: true,  name: "escrowId", type: "bytes32" },
+      { indexed: false, name: "reason",   type: "string"  },
+    ],
+  },
 ] as const;

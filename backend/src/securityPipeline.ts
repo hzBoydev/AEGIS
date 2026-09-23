@@ -4,6 +4,7 @@ import { checkAddressSecurity, type SecurityCheckResult } from "./goplusChecker.
 import { getOnChainIntel, type OnChainIntel } from "./bscscanChecker.js";
 import { runRules } from "./ruleEngine.js";
 import { callLLM, generateHardRuleExplanation, type LLMDecision } from "./aiAnalyzer.js";
+import { getAddressMemory, formatMemoryForPrompt } from "./agentMemory.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 export interface FinalDecision {
@@ -128,12 +129,26 @@ export async function runSecurityPipeline(
     };
   }
 
-  // ── Step 5: Call LLM ──────────────────────────────────────────────────────
-  console.log(`[LLM]     Calling ${config.OLLAMA_MODEL} via Ollama...`);
+  // ── Step 5: Load agent memory for recipient ─────────────────────────────
+  const memory = getAddressMemory(recipient);
+  const memoryContext = formatMemoryForPrompt(memory);
+
+  if (memory.totalSeen > 0) {
+    console.log(
+      `[Memory]  Recipient seen before: ${memory.totalSeen}x | ` +
+      `approved=${memory.totalApproved} rejected=${memory.totalRejected} | ` +
+      `hadHardRule=${memory.hadHardRuleReject}`
+    );
+  } else {
+    console.log(`[Memory]  First time seeing this recipient — no history.`);
+  }
+
+  // ── Step 6: Call LLM (with memory context) ────────────────────────────────
+  console.log(`[LLM]     Calling ${config.OLLAMA_MODEL} via Ollama (with memory context)...`);
 
   let llmDecision: LLMDecision;
   try {
-    llmDecision = await callLLM({ recipient, amountBNB, security, intel });
+    llmDecision = await callLLM({ recipient, amountBNB, security, intel, memoryContext });
     console.log(
       `[LLM]     eligible=${llmDecision.eligible} ` +
       `confidence=${llmDecision.confidence.toFixed(2)} ` +
@@ -153,7 +168,7 @@ export async function runSecurityPipeline(
     );
   }
 
-  // ── Step 6: Apply confidence threshold ───────────────────────────────────
+  // ── Step 7: Apply confidence threshold ───────────────────────────────────
   if (llmDecision.confidence < config.LLM_CONFIDENCE_THRESHOLD) {
     console.log(
       `[Final]   REJECT (fail-safe — LLM confidence ${llmDecision.confidence.toFixed(2)} < threshold ${config.LLM_CONFIDENCE_THRESHOLD})`
@@ -168,7 +183,7 @@ export async function runSecurityPipeline(
     );
   }
 
-  // ── Step 7: Hard override check ───────────────────────────────────────────
+  // ── Step 8: Hard override check ───────────────────────────────────────────
   // GoPlus malicious ALWAYS wins. LLM cannot override security intelligence.
   if (security.status === "malicious") {
     console.log(
@@ -193,7 +208,7 @@ export async function runSecurityPipeline(
     };
   }
 
-  // ── Step 8: Accept LLM decision ───────────────────────────────────────────
+  // ── Step 9: Accept LLM decision ───────────────────────────────────────────
   const outcome = llmDecision.eligible ? "RELEASE" : "REJECT";
   console.log(
     `[Final]   ${outcome} (LLM — confidence=${llmDecision.confidence.toFixed(2)} risk=${llmDecision.riskLevel})`
