@@ -1,6 +1,7 @@
 import { config } from "./config.js";
 import type { SecurityCheckResult } from "./goplusChecker.js";
 import type { OnChainIntel } from "./bscscanChecker.js";
+import { TOOL_CATALOG } from "./tools.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 export interface LLMDecision {
@@ -9,23 +10,95 @@ export interface LLMDecision {
   confidence: number;
   riskLevel: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
   reason: string;
+  /**
+   * Tool tambahan yang diminta LLM (field tool calling).
+   * [] = bukti dinilai cukup → keputusan final dalam 1 call.
+   * Berisi nama tool → orkestrator mengeksekusi tool, lalu putaran ke-2.
+   */
+  needsData: string[];
 }
 
 export interface LLMInput {
+  sender: string;
   recipient: string;
   amountBNB: number;
   security: SecurityCheckResult;
   intel: OnChainIntel;
   /** Teks memori historis dari agentMemory — siap inject ke prompt */
   memoryContext?: string;
+  /** Hasil eksekusi tool (hanya putaran ke-2 / followUp). */
+  toolResults?: string;
+  /** True untuk putaran ke-2: keputusan final, needsData wajib []. */
+  followUp?: boolean;
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const VALID_RISK_LEVELS = ["LOW", "MEDIUM", "HIGH", "CRITICAL"] as const;
 
+// ── Ollama serialization lock ─────────────────────────────────────────────────
+/**
+ * Serialisasi SEMUA request Ollama ke satu antrian.
+ *
+ * Model Qwen3:8b berjalan lokal di satu GPU (VRAM 6GB). Jika beberapa escrow
+ * diproses konkuren (poller memakai `void processEscrow`), request akan
+ * saling mengantre di dalam Ollama dan memicu timeout — pelajaran dari
+ * kegagalan CoT sebelumnya. Dengan lock ini, antrean dikelola di sisi kita:
+ * timeout hanya dihitung setelah giliran tiba, bukan selama menunggu.
+ */
+let ollamaChain: Promise<void> = Promise.resolve();
+
+function withOllamaLock<T>(fn: () => Promise<T>): Promise<T> {
+  const result = ollamaChain.then(fn, fn);
+  ollamaChain = result.then(
+    () => undefined,
+    () => undefined
+  );
+  return result;
+}
+
+/**
+ * Panggil saat startup: load model ke VRAM SEBELUM escrow pertama tiba.
+ * Cold-load qwen3:8b terukur ±20 detik — tanpa warmup, escrow pertama di
+ * sesi demo bisa mendekati timeout OLLAMA_TIMEOUT_MS (30 detik).
+ * Gagal warmup bukan fatal: escrow tetap diproses (timeout dihitung
+ * setelah giliran tiba di antrean lock).
+ */
+export async function warmupOllama(): Promise<void> {
+  try {
+    await withOllamaLock(async () => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), config.OLLAMA_TIMEOUT_MS);
+      try {
+        const response = await fetch(`${config.OLLAMA_URL}/api/generate`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: config.OLLAMA_MODEL,
+            prompt: "OK",
+            stream: false,
+            keep_alive: "30m",
+            options: { num_predict: 1 },
+          }),
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+      } finally {
+        clearTimeout(timer);
+      }
+    });
+    console.log(`[LLM]     Model ${config.OLLAMA_MODEL} siap (warmup selesai).`);
+  } catch (err) {
+    console.warn(
+      `[LLM]     Warmup gagal (${err instanceof Error ? err.message : err}) — akan dicoba ulang otomatis pada call pertama.`
+    );
+  }
+}
+
 // ── Prompt Builder ────────────────────────────────────────────────────────────
 function buildPrompt(input: LLMInput): string {
-  const { recipient, amountBNB, security, intel } = input;
+  const { sender, recipient, amountBNB, security, intel } = input;
 
   const goplusSection =
     security.status === "unavailable"
@@ -39,7 +112,7 @@ function buildPrompt(input: LLMInput): string {
     : [
         `BscScan On-chain (BSC Testnet):`,
         `  Jumlah transaksi : ${intel.txCount ?? "tidak diketahui"}`,
-        `  Umur wallet      : ${intel.walletAgeInDays !== null ? `${intel.walletAgeInDays.toFixed(1)} hari` : "tidak diketahui (belum pernah transaksi)"}`,
+        `  Umur wallet      : ${intel.walletAgeInDays !== null ? `${intel.walletAgeInDays.toFixed(1)} hari` : "tidak diketahui (explorer tidak menyediakan data usia)"}`,
         `  Wallet baru      : ${intel.isNewWallet ? "ya" : "tidak"}`,
         `  Smart contract   : ${intel.isContract ? "ya" : "tidak"}`,
         `  Saldo BNB        : ${intel.balanceBNB !== null ? `${intel.balanceBNB.toFixed(6)} BNB` : "tidak diketahui"}`,
@@ -66,8 +139,10 @@ ATURAN WAJIB:
 7. Confidence TINGGI (>=0.75) jika: GoPlus=BERSIH, tidak ada flag, jumlah kecil hingga sedang.
 8. Confidence RENDAH jika: GoPlus tidak tersedia, ada sinyal yang bertentangan, atau pola mencurigakan.
 9. Outputmu akan divalidasi. Kembalikan HANYA JSON valid sesuai skema di bawah.
+10. Jika kamu mengisi needsData, gunakan HANYA nama tool dari daftar yang diberikan. Jangan mengarang nama tool.
 
 BUKTI:
+Alamat pengirim : ${sender} (profil on-chain pengirim TIDAK TERMASUK dalam bukti)
 Alamat penerima : ${recipient}
 Jumlah transfer : ${amountBNB} BNB
 
@@ -77,11 +152,37 @@ ${bscscanSection}
 
 ${input.memoryContext ?? "MEMORI HISTORIS AEGIS:\n  Alamat ini BELUM PERNAH dilihat sebelumnya. Ini adalah evaluasi pertama."}
 
+${
+  input.followUp
+    ? `DATA TAMBAHAN (hasil tool yang kamu minta):
+${input.toolResults ?? "(tidak ada)"}
+
+INSTRUKSI PUTARAN INI (PUTARAN KEDUA & TERAKHIR):
+- Ini adalah putaran TERAKHIR. Keputusanmu akan langsung dieksekusi di blockchain.
+- needsData WAJIB: [] (tidak ada lagi kesempatan meminta data).
+- Perbarui penilaianmu berdasarkan data tambahan di atas — nilai ulang confidence dengan bukti baru.`
+    : `DATA TAMBAHAN YANG BISA KAMU MINTA (tool calling):
+Jika bukti di atas BELUM cukup untuk penilaian yang meyakinkan, kamu BOLEH meminta data tambahan dengan mengisi needsData. Jika bukti sudah cukup, isi needsData: [].
+Daftar tool yang tersedia:
+${TOOL_CATALOG.map((t) => `- ${t.name}: ${t.description}`).join("\n")}
+Aturan tool:
+- Pada mayoritas kasus yang wajar (GoPlus bersih, jumlah kecil, riwayat jelas), cukup isi needsData: [].
+- Minta HANYA data yang benar-benar mengubah penilaian — bukan sekadar "memastikan".
+- Panduan kapan SEHARUSNYA kamu minta data:
+  * Jumlah transfer >= 1 BNB → minta get_sender_profile. Profil pengirim BELUM ada di bukti di atas, dan transfer besar wajib menilai pengirimnya.
+  * Kamu ragu terhadap pola aktivitas penerima → get_recipient_recent_txs.
+  * Memori historis menunjukkan riwayat negatif yang ingin kamu konfirmasi → tool riwayat database yang sesuai.
+- Ini SATU-SATUNYA kesempatan meminta data. Setelah data tambahan diberikan, keputusanmu bersifat final.`
+}
+
 TUGAS:
 Berdasarkan bukti di atas, nilai risiko pelepasan dana kepada penerima ini.
 
+Pertimbangkan needsData lebih DULU sebelum menetapkan keputusan: apakah ada celah bukti yang harus ditutup dengan tool?
+
 Kembalikan HANYA objek JSON dengan skema berikut:
 {
+  "needsData": [],
   "eligible": true | false,
   "confidence": <angka desimal 0.0 sampai 1.0>,
   "riskLevel": "LOW" | "MEDIUM" | "HIGH" | "CRITICAL",
@@ -93,6 +194,14 @@ Aturan respons:
 - eligible=false berarti dana dikembalikan ke pengirim
 - confidence adalah keyakinan KAMU terhadap keputusan ini (0.0=tidak yakin, 1.0=sangat yakin)
 - riskLevel mencerminkan tingkat risiko transaksi, tidak tergantung arah keputusan
+- needsData adalah array NAMA TOOL yang kamu minta (contoh: ["get_sender_profile"]), atau [] jika bukti sudah cukup${
+    input.followUp ? " — pada putaran ini WAJIB []" : ""
+  }${
+    input.followUp
+      ? ""
+      : `
+ - ATURAN IMPERATIF: jika jumlah transfer >= 1 BNB, needsData WAJIB ["get_sender_profile"] — profil pengirim belum ada di bukti dan transfer besar tidak boleh dinilai tanpa profil pengirim.`
+  }
 - reason HARUS menyebut fakta spesifik: jumlah transaksi, jumlah BNB, status GoPlus
 - Contoh reason BAIK: "Alamat penerima memiliki riwayat transaksi normal dan wajar. Jumlah transfer (0.001 BNB) tidak termasuk kategori besar, risiko sangat rendah."
 - Contoh reason BAIK: "Alamat penerima memiliki riwayat transaksi 0 yang mencurigakan. Jumlah transfer besar untuk address baru ini memicu risiko tinggi."
@@ -113,59 +222,65 @@ Aturan respons:
  * Callers should treat thrown errors as fail-safe REJECT.
  */
 export async function callLLM(input: LLMInput): Promise<LLMDecision> {
-  const controller = new AbortController();
-  const timer = setTimeout(
-    () => controller.abort("Ollama request timeout"),
-    config.OLLAMA_TIMEOUT_MS
-  );
-
   const prompt = buildPrompt(input);
 
-  let response: Response;
-  try {
-    response = await fetch(`${config.OLLAMA_URL}/api/generate`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: config.OLLAMA_MODEL,
-        prompt,
-        stream: false,
-        format: "json",
-        options: {
-          temperature: 0.1, // low temperature for consistent, deterministic output
-          num_predict: 512,
-        },
-      }),
-      signal: controller.signal,
-    });
-  } catch (err) {
-    clearTimeout(timer);
-    const isAbort = err instanceof Error && err.name === "AbortError";
-    if (isAbort) {
-      throw new Error(`Ollama timeout after ${config.OLLAMA_TIMEOUT_MS}ms`);
+  // Serialisasi ke antrian Ollama — timeout dihitung setelah giliran tiba.
+  return withOllamaLock(async () => {
+    const controller = new AbortController();
+    const timer = setTimeout(
+      () => controller.abort("Ollama request timeout"),
+      config.OLLAMA_TIMEOUT_MS
+    );
+
+    let response: Response;
+    try {
+      response = await fetch(`${config.OLLAMA_URL}/api/generate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: config.OLLAMA_MODEL,
+          prompt,
+          stream: false,
+          format: "json",
+          // Model tetap tinggal di memori selama sesi demo/judging
+          // (default Ollama unload setelah 5 menit idle → cold-load ~20 detik).
+          keep_alive: "30m",
+          options: {
+            temperature: 0.1, // low temperature for consistent, deterministic output
+            num_predict: 512,
+          },
+        }),
+        signal: controller.signal,
+      });
+    } catch (err) {
+      clearTimeout(timer);
+      const isAbort = err instanceof Error && err.name === "AbortError";
+      if (isAbort) {
+        throw new Error(`Ollama timeout after ${config.OLLAMA_TIMEOUT_MS}ms`);
+      }
+      throw new Error(`Ollama network error: ${err}`);
     }
-    throw new Error(`Ollama network error: ${err}`);
-  }
 
-  clearTimeout(timer);
+    clearTimeout(timer);
 
-  if (!response.ok) {
-    throw new Error(`Ollama HTTP ${response.status}: ${response.statusText}`);
-  }
+    if (!response.ok) {
+      throw new Error(`Ollama HTTP ${response.status}: ${response.statusText}`);
+    }
 
-  let body: { response?: string };
-  try {
-    body = (await response.json()) as { response?: string };
-  } catch {
-    throw new Error("Ollama returned malformed JSON body");
-  }
+    let body: { response?: string };
+    try {
+      body = (await response.json()) as { response?: string };
+    } catch {
+      throw new Error("Ollama returned malformed JSON body");
+    }
 
-  if (!body.response || typeof body.response !== "string") {
-    throw new Error("Ollama response missing 'response' field");
-  }
+    if (!body.response || typeof body.response !== "string") {
+      throw new Error("Ollama response missing 'response' field");
+    }
 
-  // Parse and validate the LLM's JSON output
-  return parseLLMOutput(body.response);
+    // Parse and validate the LLM's JSON output
+    return parseLLMOutput(body.response);
+  });
 }
 
 // ── JSON Parser (robust) ──────────────────────────────────────────────────────
@@ -217,11 +332,28 @@ function parseLLMOutput(raw: string): LLMDecision {
     throw new Error(`Missing or empty 'reason' field`);
   }
 
+  // ── needsData (tool calling) — field aditif, parsing longgar ───────────────
+  // Jika hilang / bukan array → anggap [] (kasus normal: 1 call, tanpa tool).
+  // Validasi nama tool terhadap katalog dilakukan di orkestrator (pipeline),
+  // bukan di parser — parser sengaja tidak bergantung pada daftar tool.
+  let needsData: string[] = [];
+  const rawNeeds = parsed.needsData;
+  if (typeof rawNeeds === "string" && rawNeeds.trim() !== "") {
+    needsData = [rawNeeds.trim()];
+  } else if (Array.isArray(rawNeeds)) {
+    needsData = rawNeeds
+      .filter((x): x is string => typeof x === "string")
+      .map((s) => s.trim())
+      .filter((s) => s !== "");
+  }
+  needsData = Array.from(new Set(needsData));
+
   return {
     eligible: parsed.eligible as boolean,
     confidence,
     riskLevel: riskLevel as LLMDecision["riskLevel"],
     reason: (parsed.reason as string).trim(),
+    needsData,
   };
 }
 
@@ -252,25 +384,27 @@ export async function generateHardRuleExplanation(
 ): Promise<string> {
   const { recipient, amountBNB, security, intel, ruleContext } = ctx;
 
-  const controller = new AbortController();
-  // Short timeout for explanation — don't block pipeline
-  const EXPLAIN_TIMEOUT = Math.min(config.OLLAMA_TIMEOUT_MS, 15_000);
-  const timer = setTimeout(() => controller.abort(), EXPLAIN_TIMEOUT);
+  try {
+    // Serialisasi juga — explanation tidak boleh menabrak call keputusan
+    // di antrian Ollama yang sama (satu model, satu GPU).
+    const result = await withOllamaLock(async () => {
+      const controller = new AbortController();
+      // Short timeout for explanation — don't block pipeline
+      const EXPLAIN_TIMEOUT = Math.min(config.OLLAMA_TIMEOUT_MS, 15_000);
+      const timer = setTimeout(() => controller.abort(), EXPLAIN_TIMEOUT);
 
-  const goplusSection =
-    security.status === "unavailable"
-      ? `GoPlus: TIDAK TERSEDIA`
-      : security.status === "malicious"
-      ? `GoPlus: BERBAHAYA — Flag: ${security.riskFlags.join(", ")}`
-      : `GoPlus: BERSIH`;
+      const goplusSection =
+        security.status === "unavailable"
+          ? `GoPlus: TIDAK TERSEDIA`
+          : security.status === "malicious"
+          ? `GoPlus: BERBAHAYA — Flag: ${security.riskFlags.join(", ")}`
+          : `GoPlus: BERSIH`;
 
-  const bscscanSection = intel.unavailable
-    ? `BscScan: TIDAK TERSEDIA`
-    : [
-        `BscScan: txCount=${intel.txCount ?? "?"}, umur=${intel.walletAgeInDays !== null ? `${intel.walletAgeInDays.toFixed(1)} hari` : "?"}, saldo=${intel.balanceBNB !== null ? `${intel.balanceBNB.toFixed(4)} BNB` : "?"}`,
-      ].join("");
+      const bscscanSection = intel.unavailable
+        ? `BscScan: TIDAK TERSEDIA`
+        : `BscScan: txCount=${intel.txCount ?? "?"}, umur=${intel.walletAgeInDays !== null ? `${intel.walletAgeInDays.toFixed(1)} hari` : "?"}, saldo=${intel.balanceBNB !== null ? `${intel.balanceBNB.toFixed(4)} BNB` : "?"}`;
 
-  const prompt = `Kamu adalah AEGIS AI Oracle. Sistem keamanan kami telah MEMUTUSKAN untuk MENOLAK transfer ini berdasarkan aturan deterministik.
+      const prompt = `Kamu adalah AEGIS AI Oracle. Sistem keamanan kami telah MEMUTUSKAN untuk MENOLAK transfer ini berdasarkan aturan deterministik.
 
 KEPUTUSAN SUDAH FINAL: TOLAK (kamu tidak bisa mengubah ini)
 Alasan teknis: ${ruleContext}
@@ -290,47 +424,53 @@ Contoh yang BAIK:
 Kembalikan HANYA string JSON dengan format:
 {"reason": "penjelasan spesifik di sini"}`;
 
-  try {
-    const response = await fetch(`${config.OLLAMA_URL}/api/generate`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: config.OLLAMA_MODEL,
-        prompt,
-        stream: false,
-        format: "json",
-        options: { temperature: 0.3, num_predict: 200 },
-      }),
-      signal: controller.signal,
+      try {
+        const response = await fetch(`${config.OLLAMA_URL}/api/generate`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: config.OLLAMA_MODEL,
+            prompt,
+            stream: false,
+            format: "json",
+            keep_alive: "30m",
+            options: { temperature: 0.3, num_predict: 200 },
+          }),
+          signal: controller.signal,
+        });
+
+        clearTimeout(timer);
+
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+        const body = (await response.json()) as { response?: string };
+        if (!body.response) throw new Error("Empty response");
+
+        // Parse the reason from LLM output
+        const cleaned = body.response
+          .trim()
+          .replace(/^```(?:json)?\s*/i, "")
+          .replace(/\s*```$/i, "")
+          .trim();
+
+        const match = cleaned.match(/\{[\s\S]*\}/);
+        if (!match) throw new Error("No JSON in response");
+
+        const parsed = JSON.parse(match[0]) as Record<string, unknown>;
+        const reason = parsed.reason;
+
+        if (typeof reason === "string" && reason.trim().length > 10) {
+          return reason.trim();
+        }
+        throw new Error("Invalid reason field");
+      } finally {
+        clearTimeout(timer);
+      }
     });
 
-    clearTimeout(timer);
-
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-
-    const body = (await response.json()) as { response?: string };
-    if (!body.response) throw new Error("Empty response");
-
-    // Parse the reason from LLM output
-    const cleaned = body.response.trim()
-      .replace(/^```(?:json)?\s*/i, "")
-      .replace(/\s*```$/i, "")
-      .trim();
-
-    const match = cleaned.match(/\{[\s\S]*\}/);
-    if (!match) throw new Error("No JSON in response");
-
-    const parsed = JSON.parse(match[0]) as Record<string, unknown>;
-    const reason = parsed.reason;
-
-    if (typeof reason === "string" && reason.trim().length > 10) {
-      console.log(`[LLM]     Explanation generated: ${reason.slice(0, 80)}...`);
-      return reason.trim();
-    }
-
-    throw new Error("Invalid reason field");
+    console.log(`[LLM]     Explanation generated: ${result.slice(0, 80)}...`);
+    return result;
   } catch (err) {
-    clearTimeout(timer);
     const isAbort = err instanceof Error && err.name === "AbortError";
     if (isAbort) {
       console.warn(`[LLM]     Explanation timeout — using rule context`);
