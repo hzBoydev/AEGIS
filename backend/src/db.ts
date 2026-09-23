@@ -18,6 +18,10 @@ db.exec(`
     risk_flags  TEXT,
     tx_hash     TEXT,
     tools_used  TEXT,
+    debate      TEXT,
+    status      TEXT    NOT NULL DEFAULT 'final',
+    human_vote  INTEGER,
+    human_reason TEXT,
     created_at  TEXT    DEFAULT CURRENT_TIMESTAMP
   )
 `);
@@ -41,8 +45,36 @@ if (!colNames.includes("risk_flags")) {
 if (!colNames.includes("tools_used")) {
   db.exec("ALTER TABLE decisions ADD COLUMN tools_used TEXT");
 }
+if (!colNames.includes("debate")) {
+  db.exec("ALTER TABLE decisions ADD COLUMN debate TEXT");
+}
+if (!colNames.includes("status")) {
+  db.exec("ALTER TABLE decisions ADD COLUMN status TEXT NOT NULL DEFAULT 'final'");
+}
+if (!colNames.includes("human_vote")) {
+  db.exec("ALTER TABLE decisions ADD COLUMN human_vote INTEGER");
+}
+if (!colNames.includes("human_reason")) {
+  db.exec("ALTER TABLE decisions ADD COLUMN human_reason TEXT");
+}
+
+// ── De-dup: 1 escrow = 1 decision ────────────────────────────────────────────
+// Poller bisa proses ulang setelah tsx restart (Set in-memory kosong) —
+// UNIQUE mencegah dua baris pending_human untuk escrow yang sama.
+db.exec(`
+  DELETE FROM decisions
+  WHERE id NOT IN (
+    SELECT MIN(id) FROM decisions GROUP BY escrow_id
+  )
+`);
+db.exec(`
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_decisions_escrow_id
+  ON decisions(escrow_id)
+`);
 
 // ── Interfaces ────────────────────────────────────────────────────────────────
+export type DecisionStatus = "final" | "pending_human";
+
 export interface DecisionRecord {
   escrowId: string;
   sender: string;
@@ -57,15 +89,50 @@ export interface DecisionRecord {
   txHash?: string;
   /** Nama tool yang dieksekusi AI pada keputusan ini (tool calling). */
   toolsUsed?: string[];
+  /** Transkrip sidang multi-agent (Investigator → Advocate → Judge). */
+  debate?: unknown;
+  /** final = sudah on-chain; pending_human = hold, tunggu vote. */
+  status?: DecisionStatus;
+  humanReason?: string | undefined;
+}
+
+export interface PendingHumanRow {
+  id: number;
+  escrow_id: string;
+  sender: string;
+  recipient: string;
+  amount: string;
+  eligible: number;
+  confidence: number;
+  reasoning: string;
+  risk_level: string | null;
+  decided_by: string | null;
+  debate: string | null;
+  status: string;
+  human_reason: string | null;
+  human_vote: number | null;
+  tx_hash: string | null;
+  created_at: string;
 }
 
 // ── Queries ───────────────────────────────────────────────────────────────────
 export function saveDecision(record: DecisionRecord): void {
+  const existing = getDecisionByEscrowId(record.escrowId) as
+    | { id?: number }
+    | undefined;
+  if (existing) {
+    console.warn(
+      `[DB] skip saveDecision — escrow_id sudah ada: ${record.escrowId.slice(0, 14)}…`
+    );
+    return;
+  }
+
   const stmt = db.prepare(`
     INSERT INTO decisions
       (escrow_id, sender, recipient, amount, eligible, confidence, reasoning,
-       risk_level, decided_by, risk_flags, tx_hash, tools_used)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       risk_level, decided_by, risk_flags, tx_hash, tools_used, debate,
+       status, human_reason)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   stmt.run(
@@ -82,7 +149,10 @@ export function saveDecision(record: DecisionRecord): void {
     record.txHash ?? null,
     record.toolsUsed && record.toolsUsed.length > 0
       ? JSON.stringify(record.toolsUsed)
-      : null
+      : null,
+    record.debate !== undefined ? JSON.stringify(record.debate) : null,
+    record.status ?? "final",
+    record.humanReason ?? null
   );
 }
 
@@ -96,6 +166,70 @@ export function getDecisionByEscrowId(escrowId: string): unknown {
   return db
     .prepare("SELECT * FROM decisions WHERE escrow_id = ?")
     .get(escrowId);
+}
+
+/** Escrow yang masih menunggu vote manusia (1 baris per escrow_id). */
+export function getPendingHumanDecisions(): PendingHumanRow[] {
+  return db
+    .prepare(
+      `SELECT * FROM decisions
+       WHERE status = 'pending_human'
+         AND id IN (
+           SELECT MIN(id) FROM decisions
+           WHERE status = 'pending_human'
+           GROUP BY escrow_id
+         )
+       ORDER BY created_at DESC`
+    )
+    .all() as PendingHumanRow[];
+}
+
+export function getPendingHumanByEscrowId(
+  escrowId: string
+): PendingHumanRow | undefined {
+  return db
+    .prepare(
+      `SELECT * FROM decisions
+       WHERE escrow_id = ? AND status = 'pending_human'
+       ORDER BY id ASC LIMIT 1`
+    )
+    .get(escrowId) as PendingHumanRow | undefined;
+}
+
+/**
+ * Finalisasi setelah vote manusia: update baris pending → final + tx on-chain.
+ * eligible = vote manusia (bukan rekomendasi AI).
+ */
+export function finalizeHumanDecision(input: {
+  escrowId: string;
+  humanVote: boolean;
+  humanReason: string;
+  finalReason: string;
+  decidedBy: string;
+  txHash: string;
+}): boolean {
+  const info = db
+    .prepare(
+      `UPDATE decisions SET
+        eligible = ?,
+        reasoning = ?,
+        decided_by = ?,
+        tx_hash = ?,
+        status = 'final',
+        human_vote = ?,
+        human_reason = ?
+      WHERE escrow_id = ? AND status = 'pending_human'`
+    )
+    .run(
+      input.humanVote ? 1 : 0,
+      input.finalReason,
+      input.decidedBy,
+      input.txHash,
+      input.humanVote ? 1 : 0,
+      input.humanReason,
+      input.escrowId
+    );
+  return info.changes > 0;
 }
 
 // ── Tool-calling history queries ──────────────────────────────────────────────

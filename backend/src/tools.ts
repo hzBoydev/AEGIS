@@ -59,6 +59,19 @@ export const TOOL_NAMES: ReadonlySet<string> = new Set(
   TOOL_CATALOG.map((t) => t.name)
 );
 
+/**
+ * Validasi `needsData` LLM terhadap katalog.
+ * Nama di luar katalog tidak pernah dieksekusi (injection / hallucination).
+ */
+export function sanitizeNeedsData(raw: readonly string[]): {
+  requested: string[];
+  dropped: string[];
+} {
+  const requested = raw.filter((n) => TOOL_NAMES.has(n));
+  const dropped = raw.filter((n) => !TOOL_NAMES.has(n));
+  return { requested, dropped };
+}
+
 /** Batas total karakter blok tool agar prompt putaran ke-2 tetap ringan. */
 const BLOCK_CHAR_LIMIT = 6000;
 

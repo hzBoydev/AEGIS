@@ -34,6 +34,22 @@ const LLM_CONFIDENCE_THRESHOLD = Number(
   process.env.LLM_CONFIDENCE_THRESHOLD ?? 0.80
 );
 
+/**
+ * Batas bawah zona abu-abu human-in-the-loop.
+ * conf < HUMAN_CONF_MIN → fail-safe REJECT (terlalu ragu untuk ditanya manusia).
+ * HUMAN_CONF_MIN <= conf < LLM_CONFIDENCE_THRESHOLD → hold, minta 1 suara manusia.
+ * conf >= threshold → AI boleh putus (kecuali sidang berbalik lean → tetap human).
+ * Default: 0.55
+ */
+const HUMAN_CONF_MIN = Number(process.env.HUMAN_CONF_MIN ?? 0.55);
+
+/**
+ * Aktifkan eskalasi human-in-the-loop. "false" → kembali ke perilaku lama
+ * (conf < threshold langsung fail-safe REJECT, tanpa vote manusia).
+ */
+const HUMAN_ESCALATION_ENABLED =
+  (process.env.HUMAN_ESCALATION_ENABLED ?? "true").toLowerCase() !== "false";
+
 // ── GoPlus ────────────────────────────────────────────────────────────────────
 const GOPLUS_API_URL =
   process.env.GOPLUS_API_URL ?? "https://api.gopluslabs.io/api/v1";
@@ -120,6 +136,8 @@ export const config = {
   OLLAMA_MODEL,
   OLLAMA_TIMEOUT_MS,
   LLM_CONFIDENCE_THRESHOLD,
+  HUMAN_CONF_MIN,
+  HUMAN_ESCALATION_ENABLED,
   GOPLUS_API_URL,
   GOPLUS_API_KEY,
   GOPLUS_TIMEOUT_MS,

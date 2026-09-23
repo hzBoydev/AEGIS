@@ -5,6 +5,8 @@ import { ConnectButton } from "@rainbow-me/rainbowkit";
 import { useAccount, useWriteContract, useWaitForTransactionReceipt } from "wagmi";
 import { parseEther } from "viem";
 import { CONTRACT_ADDRESS, AEGIS_VAULT_ABI } from "@/config/contract";
+import LiveDebate from "@/components/LiveDebate";
+import HumanReview from "@/components/HumanReview";
 
 interface Decision {
   id: number;
@@ -16,6 +18,8 @@ interface Decision {
   confidence: number;
   reasoning: string;
   tx_hash: string | null;
+  status?: string;
+  human_vote?: number | null;
   created_at: string;
 }
 
@@ -76,37 +80,54 @@ function EscrowHistory() {
       </p>
 
       <div className="relative pl-6 border-l flex flex-col gap-7" style={{ borderColor: "var(--border)" }}>
-        {decisions.map((d) => (
-          <div key={d.id} className="relative">
-            <span
-              className="absolute -left-[27px] top-1.5 w-3 h-3 rounded-full border-2"
-              style={{
-                borderColor: d.eligible ? "var(--safe)" : "var(--danger)",
-                background: "var(--bg)",
-              }}
-            />
-            <div className="flex items-baseline justify-between gap-4">
-              <p className="font-display text-lg">
-                {d.amount} BNB{" "}
-                <span
-                  className="text-sm font-sans"
-                  style={{ color: d.eligible ? "var(--safe)" : "var(--danger)" }}
-                >
-                  {d.eligible ? "diteruskan" : "dikembalikan"}
+        {decisions.map((d) => {
+          const pending = d.status === "pending_human";
+          return (
+            <div key={d.id} className="relative">
+              <span
+                className="absolute -left-[27px] top-1.5 w-3 h-3 rounded-full border-2"
+                style={{
+                  borderColor: pending
+                    ? "var(--bronze)"
+                    : d.eligible
+                    ? "var(--safe)"
+                    : "var(--danger)",
+                  background: "var(--bg)",
+                }}
+              />
+              <div className="flex items-baseline justify-between gap-4">
+                <p className="font-display text-lg">
+                  {d.amount} BNB{" "}
+                  <span
+                    className="text-sm font-sans"
+                    style={{
+                      color: pending
+                        ? "var(--bronze)"
+                        : d.eligible
+                        ? "var(--safe)"
+                        : "var(--danger)",
+                    }}
+                  >
+                    {pending
+                      ? "menunggu veto manusia"
+                      : d.eligible
+                      ? "diteruskan"
+                      : "dikembalikan"}
+                  </span>
+                </p>
+                <span className="text-xs text-[var(--text-secondary)] whitespace-nowrap">
+                  {Math.round(d.confidence * 100)}% yakin
                 </span>
+              </div>
+              <p className="text-xs text-[var(--text-secondary)] mt-1">
+                ke {truncateAddress(d.recipient)}
               </p>
-              <span className="text-xs text-[var(--text-secondary)] whitespace-nowrap">
-                {Math.round(d.confidence * 100)}% yakin
-              </span>
+              <p className="text-sm mt-2 leading-relaxed" style={{ color: "var(--text-primary)" }}>
+                {d.reasoning}
+              </p>
             </div>
-            <p className="text-xs text-[var(--text-secondary)] mt-1">
-              ke {truncateAddress(d.recipient)}
-            </p>
-            <p className="text-sm mt-2 leading-relaxed" style={{ color: "var(--text-primary)" }}>
-              {d.reasoning}
-            </p>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
@@ -156,7 +177,7 @@ export default function Home() {
 
       <main className="w-full max-w-xl mx-auto px-4 py-14 flex-1">
         {!isConnected ? (
-          <div className="text-center py-20">
+          <div className="text-center py-14">
             <p className="font-display text-3xl mb-4" style={{ color: "var(--text-primary)" }}>
               Perisai bagi transaksimu
             </p>
@@ -236,9 +257,12 @@ export default function Home() {
               </div>
             )}
 
+            <HumanReview />
             <EscrowHistory />
           </div>
         )}
+
+        <LiveDebate />
       </main>
     </div>
   );

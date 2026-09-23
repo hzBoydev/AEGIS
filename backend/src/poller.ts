@@ -4,7 +4,12 @@ import { publicClient, walletClient, config, account } from "./config.js";
 import { AEGIS_VAULT_ABI } from "./abi.js";
 import { runSecurityPipeline } from "./securityPipeline.js";
 import { warmupOllama } from "./aiAnalyzer.js";
-import { saveDecision } from "./db.js";
+import {
+  saveDecision,
+  getDecisionByEscrowId,
+  finalizeHumanDecision,
+} from "./db.js";
+import { publish } from "./streamBus.js";
 
 const contractAddress = config.CONTRACT_ADDRESS;
 
@@ -12,6 +17,27 @@ const contractAddress = config.CONTRACT_ADDRESS;
 // Prevents double-processing if an event fires AND the fallback poller catches
 // the same escrow within the same session.
 const processingOrDone = new Set<string>();
+
+// ── Shared: submit fulfillVerification on-chain ───────────────────────────────
+export async function submitFulfillment(
+  escrowId: `0x${string}`,
+  eligible: boolean,
+  reason: string
+): Promise<string> {
+  console.log(`\n   Submitting decision to smart contract...`);
+  const txHash = await walletClient.writeContract({
+    address: contractAddress,
+    abi: AEGIS_VAULT_ABI,
+    functionName: "fulfillVerification",
+    args: [escrowId, eligible, reason],
+    chain: bscTestnet,
+    account,
+  });
+  console.log(`   ✅ Transaction submitted: ${txHash}`);
+  await publicClient.waitForTransactionReceipt({ hash: txHash });
+  console.log(`   ✅ Confirmed on-chain.`);
+  return txHash;
+}
 
 // ── Core: process a single escrow by ID ──────────────────────────────────────
 async function processEscrow(
@@ -22,6 +48,19 @@ async function processEscrow(
     console.log(`[${trigger.toUpperCase()}] Skipping already-processed: ${escrowId.slice(0, 10)}...`);
     return;
   }
+
+  // Sudah ada di DB (final / pending_human) — jangan proses ulang setelah restart.
+  const existing = getDecisionByEscrowId(escrowId) as
+    | { status?: string; tx_hash?: string | null }
+    | undefined;
+  if (existing && (existing.tx_hash || existing.status === "pending_human")) {
+    console.log(
+      `[${trigger.toUpperCase()}] Skipping known decision (status=${existing.status ?? "final"}): ${escrowId.slice(0, 10)}...`
+    );
+    processingOrDone.add(escrowId);
+    return;
+  }
+
   processingOrDone.add(escrowId);
 
   console.log(`\n>> [${trigger.toUpperCase()}] Processing escrow: ${escrowId}`);
@@ -38,31 +77,64 @@ async function processEscrow(
 
     const amountBNB = Number(formatEther(amount));
 
+    // Double-check setelah await pertama: poller restart bisa overlap.
+    const midFlight = getDecisionByEscrowId(escrowId) as
+      | { status?: string; tx_hash?: string | null }
+      | undefined;
+    if (midFlight && (midFlight.tx_hash || midFlight.status === "pending_human")) {
+      console.log(
+        `[${trigger.toUpperCase()}] Decision appeared mid-flight — skip: ${escrowId.slice(0, 10)}...`
+      );
+      return;
+    }
+
     console.log(`   Sender    : ${sender}`);
     console.log(`   Recipient : ${recipient}`);
     console.log(`   Amount    : ${amountBNB} BNB`);
-
-    // ── Run AI security pipeline ───────────────────────────────────────────────
-    const decision = await runSecurityPipeline(sender, recipient, amountBNB);
-
-    console.log(
-      `\n[Final]   eligible=${decision.eligible} risk=${decision.riskLevel} decidedBy=${decision.decidedBy}`
-    );
-
-    // ── Submit decision to smart contract ─────────────────────────────────────
-    console.log(`\n   Submitting decision to smart contract...`);
-    const txHash = await walletClient.writeContract({
-      address: contractAddress,
-      abi: AEGIS_VAULT_ABI,
-      functionName: "fulfillVerification",
-      args: [escrowId, decision.eligible, decision.reason],
-      chain: bscTestnet,
-      account,
+    publish({
+      escrowId,
+      phase: "escrow",
+      status: "start",
+      label: `Escrow baru ${amountBNB} BNB`,
+      detail: `dari ${sender} → ${recipient}`,
+      data: { sender, recipient, amountBNB },
     });
 
-    console.log(`   ✅ Transaction submitted: ${txHash}`);
-    await publicClient.waitForTransactionReceipt({ hash: txHash });
-    console.log(`   ✅ Confirmed on-chain.`);
+    // ── Run AI security pipeline ───────────────────────────────────────────────
+    const decision = await runSecurityPipeline(sender, recipient, amountBNB, escrowId);
+
+    console.log(
+      `\n[Final]   eligible=${decision.eligible} risk=${decision.riskLevel} decidedBy=${decision.decidedBy}` +
+        (decision.needsHuman ? " needsHuman=true" : "")
+    );
+
+    // ── Human-in-the-loop: HOLD — jangan submit on-chain ──────────────────────
+    if (decision.needsHuman) {
+      saveDecision({
+        escrowId,
+        sender,
+        recipient,
+        amount: amountBNB.toString(),
+        eligible: decision.eligible,
+        confidence: decision.confidence,
+        reasoning: decision.reason,
+        riskLevel: decision.riskLevel,
+        decidedBy: "human_review",
+        riskFlags: decision.evidence.security.riskFlags,
+        toolsUsed: decision.toolsUsed,
+        debate: decision.debate,
+        status: "pending_human",
+        ...(decision.humanReason !== undefined
+          ? { humanReason: decision.humanReason }
+          : {}),
+      });
+      console.log(`   ⏸ Held for human review (belum on-chain).\n`);
+      // processingOrDone tetap diisi — poller tidak boleh proses ulang sampai vote.
+      return;
+    }
+
+    // ── Submit decision to smart contract ─────────────────────────────────────
+    const txHash = await submitFulfillment(escrowId, decision.eligible, decision.reason);
 
     // ── Persist to database ───────────────────────────────────────────────────
     saveDecision({
@@ -78,16 +150,103 @@ async function processEscrow(
       riskFlags: decision.evidence.security.riskFlags,
       txHash,
       toolsUsed: decision.toolsUsed,
+      debate: decision.debate,
+      status: "final",
     });
 
     console.log(`   Saved to database.\n`);
+    publish({
+      escrowId,
+      phase: "escrow",
+      status: "done",
+      label: "On-chain terkonfirmasi",
+      detail: txHash,
+      data: { txHash },
+    });
   } catch (err) {
     console.error(
       `   ❌ Failed to process escrow ${escrowId}:`,
       err instanceof Error ? err.message : err
     );
+    publish({
+      escrowId,
+      phase: "escrow",
+      status: "fail",
+      label: "Pemrosesan escrow gagal",
+      detail: err instanceof Error ? err.message : String(err),
+    });
     // Keep in processingOrDone to prevent infinite retry loop
   }
+}
+
+// ── Vote manusia: finalisasi pending_human → on-chain ────────────────────────
+export async function applyHumanVote(
+  escrowId: string,
+  approve: boolean
+): Promise<{ txHash: string }> {
+  const { getPendingHumanByEscrowId } = await import("./db.js");
+  const row = getPendingHumanByEscrowId(escrowId);
+  if (!row) {
+    throw new Error("Tidak ada escrow pending human untuk id ini");
+  }
+
+  const aiRec = row.eligible === 1 ? "RELEASE" : "REJECT";
+  const voteLabel = approve ? "RELEASE" : "REJECT";
+  const finalReason =
+    `Keputusan manusia: ${voteLabel}. ` +
+    `Rekomendasi AI: ${aiRec} (confidence ${(row.confidence * 100).toFixed(0)}%). ` +
+    (row.human_reason ? `Alasan hold: ${row.human_reason} ` : "") +
+    row.reasoning;
+
+  const txHash = await submitFulfillment(
+    escrowId as `0x${string}`,
+    approve,
+    finalReason
+  );
+
+  const ok = finalizeHumanDecision({
+    escrowId,
+    humanVote: approve,
+    humanReason: row.human_reason ?? "vote manual",
+    finalReason,
+    decidedBy: "human",
+    txHash,
+  });
+  if (!ok) {
+    throw new Error("Gagal update DB setelah vote (mungkin sudah difinalisasi)");
+  }
+
+  publish({
+    escrowId,
+    phase: "human",
+    status: "done",
+    label: approve ? "Veto manusia: SETUJUI" : "Veto manusia: TOLAK",
+    detail: finalReason,
+    data: { humanVote: approve, txHash, aiRecommendation: row.eligible === 1 },
+  });
+  publish({
+    escrowId,
+    phase: "final",
+    status: "done",
+    label: approve ? "DITERUSKAN (manusia)" : "DIKEMBALIKAN (manusia)",
+    detail: finalReason,
+    data: {
+      eligible: approve,
+      decidedBy: "human",
+      humanVote: approve,
+      txHash,
+    },
+  });
+  publish({
+    escrowId,
+    phase: "escrow",
+    status: "done",
+    label: "On-chain terkonfirmasi (human vote)",
+    detail: txHash,
+    data: { txHash },
+  });
+
+  return { txHash };
 }
 
 // ── Event listener: react to EscrowCreated within milliseconds ───────────────
@@ -326,6 +485,9 @@ export function startEventDrivenOracle() {
   console.log(`   Contract        : ${contractAddress}`);
   console.log(`   LLM model       : ${config.OLLAMA_MODEL}`);
   console.log(`   Confidence min  : ${config.LLM_CONFIDENCE_THRESHOLD}`);
+  console.log(
+    `   Human review    : ${config.HUMAN_ESCALATION_ENABLED ? `ON (conf ${config.HUMAN_CONF_MIN}–${config.LLM_CONFIDENCE_THRESHOLD})` : "OFF"}`
+  );
   console.log(`   Fallback poll   : every ${config.POLLING_INTERVAL_MS}ms (safety net)\n`);
 
   // 0. Warmup: load model LLM ke VRAM sebelum escrow pertama (anti cold-load timeout)
