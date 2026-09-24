@@ -2,10 +2,14 @@ import express from "express";
 import cors from "cors";
 import {
   getAllDecisions,
+  getAllDecisionsForAddress,
+  getDecisionsCount,
+  getDecisionsCountForAddress,
   getDecisionByEscrowId,
+  getEscrowIdsInvolving,
   getPendingHumanDecisions,
 } from "./db.js";
-import { getRecentEvents, subscribe } from "./streamBus.js";
+import { getRecentEvents, subscribe, getDebateSessions } from "./streamBus.js";
 import { runRedTeam, getLastRedTeamReport, type RedTeamMode } from "./redTeam.js";
 import { applyHumanVote } from "./poller.js";
 
@@ -17,10 +21,31 @@ app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", service: "AEGIS Oracle API" });
 });
 
-app.get("/api/escrows", (_req, res) => {
+function intQuery(raw: unknown, fallback: number, min: number, max: number): number {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, Math.floor(n)));
+}
+
+/** Query ?address=0x… — null bila tidak ada/kosong (arti: semua data). */
+function addressQuery(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const addr = raw.trim();
+  return addr.length > 0 ? addr : null;
+}
+
+app.get("/api/escrows", (req, res) => {
   try {
-    const decisions = getAllDecisions();
-    res.json({ success: true, data: decisions });
+    const limit = intQuery(req.query.limit, 50, 1, 200);
+    const address = addressQuery(req.query.address);
+    if (address) {
+      return res.json({
+        success: true,
+        data: getAllDecisionsForAddress(address, limit),
+        total: getDecisionsCountForAddress(address),
+      });
+    }
+    res.json({ success: true, data: getAllDecisions(limit), total: getDecisionsCount() });
   } catch (err) {
     console.error("Error fetching escrows:", err);
     res.status(500).json({ success: false, error: "Gagal mengambil data" });
@@ -96,6 +121,36 @@ app.post("/api/redteam", async (req, res) => {
       success: false,
       error: err instanceof Error ? err.message : String(err),
     });
+  }
+});
+
+// ── Arsip sidang (riwayat sesi live per escrow) ───────────────────────────────
+app.get("/api/debates", (req, res) => {
+  try {
+    const limit = intQuery(req.query.limit, 20, 1, 100);
+    let all = getDebateSessions();
+
+    const address = addressQuery(req.query.address);
+    if (address) {
+      const knownIds = getEscrowIdsInvolving(address);
+      const addr = address.toLowerCase();
+      all = all.filter((s) => {
+        if (knownIds.has(s.escrowId)) return true;
+        // Sesi yang belum/saja diproses: cocokkan sender/recipient di event escrow.
+        return s.events.some((ev) => {
+          const d = ev.data;
+          if (!d) return false;
+          if (typeof d.sender === "string" && d.sender.toLowerCase() === addr) return true;
+          if (typeof d.recipient === "string" && d.recipient.toLowerCase() === addr) return true;
+          return false;
+        });
+      });
+    }
+
+    res.json({ success: true, data: all.slice(0, limit), total: all.length });
+  } catch (err) {
+    console.error("Error fetching debates:", err);
+    res.status(500).json({ success: false, error: "Gagal mengambil arsip sidang" });
   }
 });
 

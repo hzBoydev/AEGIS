@@ -156,10 +156,50 @@ export function saveDecision(record: DecisionRecord): void {
   );
 }
 
-export function getAllDecisions(): unknown[] {
+export function getAllDecisions(limit: number = 50): unknown[] {
   return db
-    .prepare("SELECT * FROM decisions ORDER BY created_at DESC")
-    .all();
+    .prepare("SELECT * FROM decisions ORDER BY created_at DESC, id DESC LIMIT ?")
+    .all(Math.max(1, Math.min(500, Math.floor(limit))));
+}
+
+export function getDecisionsCount(): number {
+  const row = db.prepare("SELECT COUNT(*) AS n FROM decisions").get() as
+    | { n: number }
+    | undefined;
+  return row?.n ?? 0;
+}
+
+/** Riwayat escrow yang melibatkan address tertentu (sender ATAU recipient). */
+export function getAllDecisionsForAddress(address: string, limit: number): unknown[] {
+  const addr = address.toLowerCase();
+  return db
+    .prepare(
+      `SELECT * FROM decisions
+       WHERE LOWER(sender) = ? OR LOWER(recipient) = ?
+       ORDER BY created_at DESC, id DESC LIMIT ?`
+    )
+    .all(addr, addr, Math.max(1, Math.min(500, Math.floor(limit))));
+}
+
+export function getDecisionsCountForAddress(address: string): number {
+  const addr = address.toLowerCase();
+  const row = db
+    .prepare(
+      "SELECT COUNT(*) AS n FROM decisions WHERE LOWER(sender) = ? OR LOWER(recipient) = ?"
+    )
+    .get(addr, addr) as { n: number } | undefined;
+  return row?.n ?? 0;
+}
+
+/** Set escrow_id yang pernah melibatkan address — dipakai filter arsip sidang. */
+export function getEscrowIdsInvolving(address: string): Set<string> {
+  const addr = address.toLowerCase();
+  const rows = db
+    .prepare(
+      "SELECT escrow_id FROM decisions WHERE LOWER(sender) = ? OR LOWER(recipient) = ?"
+    )
+    .all(addr, addr) as Array<{ escrow_id: string }>;
+  return new Set(rows.map((r) => r.escrow_id));
 }
 
 export function getDecisionByEscrowId(escrowId: string): unknown {

@@ -34,6 +34,56 @@ const subscribers = new Set<Subscriber>();
 const BUFFER_MAX = 80;
 const buffer: StreamEvent[] = [];
 
+// ── Arsip sesi sidang (per escrow) untuk riwayat di UI ─────────────────────────
+const SESSION_MAX = 50;
+const SESSION_EVENT_MAX = 160;
+const sessions = new Map<string, StreamEvent[]>();
+
+function archive(ev: StreamEvent): void {
+  if (!ev.escrowId) return;
+  let list = sessions.get(ev.escrowId);
+  if (!list) {
+    list = [];
+    sessions.set(ev.escrowId, list);
+  }
+  list.push(ev);
+  if (list.length > SESSION_EVENT_MAX) {
+    list.splice(0, list.length - SESSION_EVENT_MAX);
+  }
+  // Map mempertahankan urutan insert — reset insert-order agar yang aktif terbaru.
+  sessions.delete(ev.escrowId);
+  sessions.set(ev.escrowId, list);
+  while (sessions.size > SESSION_MAX) {
+    const oldest = sessions.keys().next().value;
+    if (oldest === undefined) break;
+    sessions.delete(oldest);
+  }
+}
+
+export interface DebateSession {
+  escrowId: string;
+  startedAt: number;
+  updatedAt: number;
+  events: StreamEvent[];
+}
+
+/** Arsip sesi sidang, terbaru dulu. */
+export function getDebateSessions(): DebateSession[] {
+  const out: DebateSession[] = [];
+  for (const [escrowId, events] of sessions) {
+    const first = events[0];
+    const last = events[events.length - 1];
+    if (!first || !last) continue;
+    out.push({
+      escrowId,
+      startedAt: first.ts,
+      updatedAt: last.ts,
+      events: [...events],
+    });
+  }
+  return out.sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
 export function publish(
   event: {
     ts?: number;
@@ -56,6 +106,7 @@ export function publish(
   };
   buffer.push(full);
   if (buffer.length > BUFFER_MAX) buffer.shift();
+  archive(full);
 
   for (const fn of subscribers) {
     try {
