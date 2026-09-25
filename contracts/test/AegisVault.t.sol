@@ -136,14 +136,299 @@ contract AegisVaultTest is Test {
         assertFalse(foundId2);
     }
 
-    function testOnlyOwnerCanUpdateOracle() public {
+    // ── Oracle rotation: two-step + timelock ───────────────────────────────────
+
+    function testCannotSetOracleInstantlyRemoved() public {
+        // setOracle() lama sudah dihapus — rotasi wajib dua langkah.
+        (bool ok, ) = address(vault).call(
+            abi.encodeWithSignature("setOracle(address)", address(0x5))
+        );
+        assertFalse(ok);
+    }
+
+    function testOracleRotationTwoStep() public {
         address newOracle = address(0x5);
+
+        vault.proposeOracle(newOracle);
+        assertEq(vault.pendingOracle(), newOracle);
+        assertEq(vault.oracle(), oracle, "oracle lama masih aktif selama delay");
+
+        vm.prank(newOracle);
+        vm.expectRevert(AegisVault.OracleDelayNotElapsed.selector);
+        vault.acceptOracle();
+
+        vm.warp(block.timestamp + vault.ORACLE_CHANGE_DELAY());
+
+        vm.prank(newOracle);
+        vault.acceptOracle();
+
+        assertEq(vault.oracle(), newOracle);
+        assertEq(vault.pendingOracle(), address(0));
+        assertEq(vault.oracleChangeReadyAt(), 0);
+    }
+
+    function testOnlyOwnerCanProposeOracle() public {
+        vm.prank(stranger);
+        vm.expectRevert(AegisVault.OnlyOwner.selector);
+        vault.proposeOracle(address(0x5));
+    }
+
+    function testOnlyPendingOracleCanAccept() public {
+        vault.proposeOracle(address(0x5));
+        vm.warp(block.timestamp + vault.ORACLE_CHANGE_DELAY());
+
+        vm.prank(stranger);
+        vm.expectRevert(AegisVault.NotPendingOracle.selector);
+        vault.acceptOracle();
+    }
+
+    function testCannotProposeZeroOracle() public {
+        vm.expectRevert(AegisVault.InvalidRecipient.selector);
+        vault.proposeOracle(address(0));
+    }
+
+    function testOwnerCanCancelOracleProposal() public {
+        vault.proposeOracle(address(0x5));
+        vault.cancelOracleProposal();
+
+        assertEq(vault.pendingOracle(), address(0));
+
+        vm.warp(block.timestamp + vault.ORACLE_CHANGE_DELAY());
+        vm.prank(address(0x5));
+        vm.expectRevert(AegisVault.NotPendingOracle.selector);
+        vault.acceptOracle();
+    }
+
+    function testCancelOracleProposalRequiresExistingProposal() public {
+        vm.expectRevert(AegisVault.NoPendingOracle.selector);
+        vault.cancelOracleProposal();
+    }
+
+    // ── Emergency pause + withdrawal ───────────────────────────────────────────
+
+    function testPauseBlocksNewSubmissionAndFulfillment() public {
+        vm.prank(sender);
+        bytes32 escrowId = vault.submitTransfer{value: 1 ether}(recipient);
+
+        vault.pause();
+        assertTrue(vault.paused());
+
+        vm.prank(sender);
+        vm.expectRevert(AegisVault.ContractIsPaused.selector);
+        vault.submitTransfer{value: 1 ether}(recipient);
+
+        vm.prank(oracle);
+        vm.expectRevert(AegisVault.ContractIsPaused.selector);
+        vault.fulfillVerification(escrowId, true, "aman");
+    }
+
+    function testEmergencyWithdrawRefundsSenderWhilePaused() public {
+        vm.prank(sender);
+        bytes32 escrowId = vault.submitTransfer{value: 1 ether}(recipient);
+
+        // Belum pause → tidak boleh emergency withdraw.
+        vm.prank(sender);
+        vm.expectRevert(AegisVault.ContractIsPaused.selector);
+        vault.emergencyWithdraw(escrowId);
+
+        vault.pause();
+
+        // Oracle juga tidak boleh memutuskan saat pause.
+        vm.prank(oracle);
+        vm.expectRevert(AegisVault.ContractIsPaused.selector);
+        vault.fulfillVerification(escrowId, true, "tetap jalan");
+
+        uint256 senderBalanceBefore = sender.balance;
+        vm.prank(sender);
+        vault.emergencyWithdraw(escrowId);
+
+        assertEq(sender.balance, senderBalanceBefore + 1 ether);
+
+        (AegisVault.Status status, ) = vault.getEscrowStatus(escrowId);
+        assertEq(uint256(status), uint256(AegisVault.Status.CANCELLED));
+
+        bytes32[] memory pending = vault.getPendingEscrows();
+        assertEq(pending.length, 0);
+    }
+
+    function testEmergencyWithdrawOnlySender() public {
+        vm.prank(sender);
+        bytes32 escrowId = vault.submitTransfer{value: 1 ether}(recipient);
+
+        vault.pause();
+
+        vm.prank(stranger);
+        vm.expectRevert(AegisVault.OnlySender.selector);
+        vault.emergencyWithdraw(escrowId);
+
+        vm.prank(recipient);
+        vm.expectRevert(AegisVault.OnlySender.selector);
+        vault.emergencyWithdraw(escrowId);
+    }
+
+    function testCannotEmergencyWithdrawFinalizedEscrow() public {
+        vm.prank(sender);
+        bytes32 escrowId = vault.submitTransfer{value: 1 ether}(recipient);
+
+        vm.prank(oracle);
+        vault.fulfillVerification(escrowId, true, "aman");
+
+        vault.pause();
+
+        vm.prank(sender);
+        vm.expectRevert(AegisVault.EscrowNotPending.selector);
+        vault.emergencyWithdraw(escrowId);
+    }
+
+    function testUnpauseRestoresNormalFlow() public {
+        vault.pause();
+        vault.unpause();
+        assertFalse(vault.paused());
+
+        vm.prank(sender);
+        bytes32 escrowId = vault.submitTransfer{value: 1 ether}(recipient);
+
+        vm.prank(oracle);
+        vault.fulfillVerification(escrowId, true, "aman");
+
+        (AegisVault.Status status, ) = vault.getEscrowStatus(escrowId);
+        assertEq(uint256(status), uint256(AegisVault.Status.COMPLETED));
+    }
+
+    function testOnlyOwnerCanPause() public {
+        vm.prank(stranger);
+        vm.expectRevert(AegisVault.OnlyOwner.selector);
+        vault.pause();
 
         vm.prank(stranger);
         vm.expectRevert(AegisVault.OnlyOwner.selector);
-        vault.setOracle(newOracle);
+        vault.unpause();
+    }
 
-        vault.setOracle(newOracle);
-        assertEq(vault.oracle(), newOracle);
+    function testClaimExpiredStillWorksWhilePaused() public {
+        vm.prank(sender);
+        bytes32 escrowId = vault.submitTransfer{value: 1 ether}(recipient);
+
+        vault.pause();
+        vm.warp(block.timestamp + vault.ESCROW_TIMEOUT());
+
+        uint256 senderBalanceBefore = sender.balance;
+        vm.prank(sender);
+        vault.claimExpired(escrowId);
+        assertEq(sender.balance, senderBalanceBefore + 1 ether);
+    }
+
+    // ── Batas ukuran reason ────────────────────────────────────────────────────
+
+    function testFulfillRejectsOverlongReason() public {
+        vm.prank(sender);
+        bytes32 escrowId = vault.submitTransfer{value: 1 ether}(recipient);
+
+        bytes memory tooLong = new bytes(vault.MAX_REASON_BYTES() + 1);
+
+        vm.prank(oracle);
+        vm.expectRevert(AegisVault.ReasonTooLong.selector);
+        vault.fulfillVerification(escrowId, true, string(tooLong));
+    }
+
+    function testFulfillAcceptsMaxReasonLength() public {
+        vm.prank(sender);
+        bytes32 escrowId = vault.submitTransfer{value: 1 ether}(recipient);
+
+        bytes memory maxReason = new bytes(vault.MAX_REASON_BYTES());
+
+        vm.prank(oracle);
+        vault.fulfillVerification(escrowId, false, string(maxReason));
+
+        (AegisVault.Status status, string memory reason) = vault.getEscrowStatus(escrowId);
+        assertEq(uint256(status), uint256(AegisVault.Status.REVERTED));
+        assertEq(bytes(reason).length, vault.MAX_REASON_BYTES());
+    }
+    // ── Escrow timeout / expiry ────────────────────────────────────────────────
+
+    function testEscrowNotExpiredBeforeTimeout() public {
+        vm.prank(sender);
+        bytes32 escrowId = vault.submitTransfer{value: 1 ether}(recipient);
+
+        assertFalse(vault.isExpired(escrowId));
+        assertEq(
+            vault.expiresAt(escrowId),
+            vault.ESCROW_TIMEOUT() + escrowDataCreatedAt(escrowId)
+        );
+
+        vm.warp(block.timestamp + vault.ESCROW_TIMEOUT() - 1);
+        assertFalse(vault.isExpired(escrowId));
+    }
+
+    function testClaimExpiredRefundsSenderAfterTimeout() public {
+        vm.prank(sender);
+        bytes32 escrowId = vault.submitTransfer{value: 1 ether}(recipient);
+
+        vm.warp(block.timestamp + vault.ESCROW_TIMEOUT());
+        assertTrue(vault.isExpired(escrowId));
+
+        uint256 senderBalanceBefore = sender.balance;
+        vm.prank(stranger);
+        vault.claimExpired(escrowId);
+
+        assertEq(sender.balance, senderBalanceBefore + 1 ether);
+
+        (AegisVault.Status status, string memory reason) = vault.getEscrowStatus(escrowId);
+        assertEq(uint256(status), uint256(AegisVault.Status.EXPIRED));
+        assertTrue(bytes(reason).length > 0);
+
+        bytes32[] memory pending = vault.getPendingEscrows();
+        assertEq(pending.length, 0);
+    }
+
+    function testCannotClaimExpiredBeforeTimeout() public {
+        vm.prank(sender);
+        bytes32 escrowId = vault.submitTransfer{value: 1 ether}(recipient);
+
+        vm.warp(block.timestamp + vault.ESCROW_TIMEOUT() - 1);
+        vm.prank(sender);
+        vm.expectRevert(AegisVault.NotYetExpired.selector);
+        vault.claimExpired(escrowId);
+    }
+
+    function testCannotClaimExpiredTwice() public {
+        vm.prank(sender);
+        bytes32 escrowId = vault.submitTransfer{value: 1 ether}(recipient);
+
+        vm.warp(block.timestamp + vault.ESCROW_TIMEOUT());
+        vm.prank(sender);
+        vault.claimExpired(escrowId);
+
+        vm.prank(sender);
+        vm.expectRevert(AegisVault.EscrowNotPending.selector);
+        vault.claimExpired(escrowId);
+    }
+
+    function testOracleCannotFulfillAfterExpiry() public {
+        vm.prank(sender);
+        bytes32 escrowId = vault.submitTransfer{value: 1 ether}(recipient);
+
+        vm.warp(block.timestamp + vault.ESCROW_TIMEOUT());
+
+        vm.prank(oracle);
+        vm.expectRevert(AegisVault.EscrowTimeout.selector);
+        vault.fulfillVerification(escrowId, true, "terlambat");
+
+        // Dana tetap bisa diklaim sender.
+        vm.prank(sender);
+        vault.claimExpired(escrowId);
+
+        (AegisVault.Status status, ) = vault.getEscrowStatus(escrowId);
+        assertEq(uint256(status), uint256(AegisVault.Status.EXPIRED));
+    }
+
+    function testCannotClaimExpiredForUnknownEscrow() public {
+        bytes32 bogus = keccak256("does-not-exist");
+        vm.expectRevert(AegisVault.EscrowNotFound.selector);
+        vault.claimExpired(bogus);
+    }
+
+    function escrowDataCreatedAt(bytes32 escrowId) internal view returns (uint256 createdAt) {
+        (, , , , createdAt) = vault.getEscrowData(escrowId);
     }
 }

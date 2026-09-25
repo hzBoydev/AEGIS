@@ -102,14 +102,38 @@ export default function SendForm({ onSubmitted }: SendFormProps) {
         {error && (
           <div className="alert alert-danger" role="alert">
             <span aria-hidden>✕</span>
-            <span>{error.message.split("\n")[0]}</span>
+            <span>
+              {error.message.split("\n")[0]}
+              <span className="mt-1 block text-[11px] opacity-80">
+                Kalau transaksi tidak terkirim, cek jaringan wallet (BSC Testnet) lalu
+                coba lagi.
+              </span>
+            </span>
+          </div>
+        )}
+
+        {isConfirming && (
+          <div className="alert" role="status">
+            <span aria-hidden>⏳</span>
+            <span>
+              Menunggu transaksi dikonfirmasi jaringan BSC Testnet…
+            </span>
           </div>
         )}
 
         {isConfirmed && (
           <div className="alert alert-safe" role="status">
             <span aria-hidden>✓</span>
-            <span>Diterima. AI Oracle sedang memeriksa transaksi ini.</span>
+            <span>
+              Escrow dibuat — dana ditahan kontrak. Sidang AI (Investigator →
+              Advocate → Judge) segera dimulai; hasilnya tampil di bagian{" "}
+              <strong>Sidang AI Live</strong> (biasanya 30–60 detik).
+              {hash && (
+                <span className="mt-1 block font-mono text-[11px] opacity-80">
+                  tx {hash.slice(0, 18)}…
+                </span>
+              )}
+            </span>
           </div>
         )}
       </form>

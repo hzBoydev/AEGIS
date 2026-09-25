@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   PHASE_META,
   PHASE_ORDER,
@@ -8,6 +8,8 @@ import {
   useDebateStream,
   type StreamEvent,
 } from "@/components/DebateStream";
+import { API_BASE_URL } from "@/lib/api";
+import { formatDuration } from "@/lib/utils";
 
 export function LiveStatusBadge() {
   const { connected, finished } = useDebateStream();
@@ -88,6 +90,26 @@ export default function LiveDebate({ bare = false, onOpenPopup }: LiveDebateProp
   } = useDebateStream();
   const listRef = useRef<HTMLDivElement>(null);
 
+  // ── Progress: durasi fase berjalan & total sidang ────────────────────────────
+  const running = !finished && last?.status === "start";
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!running) return;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [running]);
+
+  const phaseStartedTs = running && last ? last.ts : null;
+  const sessionStartedTs = sessionEvents[0]?.ts ?? null;
+  const phaseElapsedSec = phaseStartedTs
+    ? Math.max(0, Math.floor((now - phaseStartedTs) / 1000))
+    : 0;
+  const sessionElapsedSec = sessionStartedTs
+    ? Math.max(0, Math.floor((now - sessionStartedTs) / 1000))
+    : 0;
+  const slowPhase = running && phaseElapsedSec >= 20;
+
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
   }, [sessionEvents.length]);
@@ -114,7 +136,7 @@ export default function LiveDebate({ bare = false, onOpenPopup }: LiveDebateProp
         <p className="text-muted text-sm leading-relaxed">
           {connected
             ? "Terhubung ke oracle. Sidang Investigator → Advocate → Judge akan muncul di sini begitu escrow diproses."
-            : sseError ?? "Menyambung ke http://localhost:3001/api/stream…"}
+            : sseError ?? `Menyambung ke ${API_BASE_URL}/api/stream…`}
         </p>
         {sseError && !connected && (
           <p className="text-danger mt-2 text-xs">
@@ -135,8 +157,25 @@ export default function LiveDebate({ bare = false, onOpenPopup }: LiveDebateProp
             active={ev.status === "start" && i === sessionEvents.length - 1}
           />
         ))}
-        {!finished && last?.status === "start" && (
-          <p className="pulse text-muted py-2 pl-16 text-xs">memproses…</p>
+        {!finished && sessionEvents.length > 0 && (
+          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 py-2 pl-16 text-[11px]">
+            <span className="text-muted">
+              total berjalan {formatDuration(sessionElapsedSec)}
+            </span>
+            {running && last && (
+              <>
+                <span className="pulse text-bronze">
+                  {PHASE_META[last.phase].title} sedang berjalan · {phaseElapsedSec} detik
+                </span>
+                {slowPhase && (
+                  <span className="text-muted">
+                    model lokal sedang inference — sidang bisa makan 30–60 detik,
+                    tunggu sebentar
+                  </span>
+                )}
+              </>
+            )}
+          </div>
         )}
       </div>
     );

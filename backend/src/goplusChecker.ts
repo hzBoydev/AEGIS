@@ -12,17 +12,49 @@ import { config } from "./config.js";
  * end-to-end during a live demo, without needing to find/use a real
  * known-malicious mainnet address (which would be risky and unreliable).
  *
- * In production, this block would be removed entirely - GoPlus would query
- * its real database exclusively.
+ * In production: set GOPLUS_SIMULATE=false (atau hapus blok ini) — GoPlus
+ * akan query database aslinya secara eksklusif.
  *
- * Usage: run `cast wallet new`, copy the address (lowercase), add it below,
- * then submit a transfer to that address from the frontend.
+ * Menambah address demo TANPA edit kode:
+ *   GOPLUS_SIMULATE=true
+ *   GOPLUS_SIMULATED_ADDRESSES=0xaaa...,0xbbb...,0xccc...
  */
-const SIMULATED_MALICIOUS_ADDRESSES = new Set<string>([
+const DEFAULT_DEMO_MALICIOUS_ADDRESSES = [
+  // Address demo bawaan — aman dipakai saat pitch/demo.
   "0x101206f123f724438f5ae6009790217d38528328",
-]);
+  "0x7661a11547ee70053a4d41114da72c4336c5a1db",
+  "0xaccb46d356055da62693ba24f644ae15abb957c7",
+  "0x87736ef227ac48ee2517e5cdab8d904d261ba173",
+  "0xc64462ef463d97964a2156e972716f25d301b0f9",
+];
+
+const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
+
+function buildSimulatedMaliciousSet(): Set<string> {
+  const set = new Set<string>(
+    DEFAULT_DEMO_MALICIOUS_ADDRESSES.map((a) => a.toLowerCase())
+  );
+
+  const fromEnv = config.GOPLUS_SIMULATED_ADDRESSES.split(",");
+  for (const raw of fromEnv) {
+    const addr = raw.trim();
+    if (!addr) continue;
+    if (!ADDRESS_RE.test(addr)) {
+      console.warn(
+        `[GoPlus] ⚠️  GOPLUS_SIMULATED_ADDRESSES diabaikan (bukan address valid): ${addr}`
+      );
+      continue;
+    }
+    set.add(addr.toLowerCase());
+  }
+
+  return set;
+}
+
+const SIMULATED_MALICIOUS_ADDRESSES = buildSimulatedMaliciousSet();
 
 function checkSimulatedMalicious(address: string): SecurityCheckResult | null {
+  if (!config.GOPLUS_SIMULATE) return null;
   if (SIMULATED_MALICIOUS_ADDRESSES.has(address.toLowerCase())) {
     return {
       status: "malicious",

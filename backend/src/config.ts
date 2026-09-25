@@ -57,6 +57,22 @@ const GOPLUS_API_URL =
 const GOPLUS_API_KEY = process.env.GOPLUS_API_KEY ?? "";
 const GOPLUS_TIMEOUT_MS = Number(process.env.GOPLUS_TIMEOUT_MS ?? 5_000);
 
+/**
+ * DEMO/TESTING ONLY — simulasi flag malicious untuk address tertentu.
+ * GoPlus tidak punya riwayat untuk address testnet yang baru dibuat, jadi
+ * untuk demo kita perlu daftar address "jahat" palsu.
+ * Set GOPLUS_SIMULATE=false di produksi → GoPlus dipanggil apa adanya.
+ */
+const GOPLUS_SIMULATE =
+  (process.env.GOPLUS_SIMULATE ?? "true").toLowerCase() !== "false";
+
+/**
+ * Address tambahan (dipisah koma) yang dianggap malicious saat simulasi aktif.
+ * Ditambahkan ke daftar demo bawaan di goplusChecker.ts — tanpa perlu edit kode.
+ * Contoh: GOPLUS_SIMULATED_ADDRESSES=0xabc...,0xdef...
+ */
+const GOPLUS_SIMULATED_ADDRESSES = process.env.GOPLUS_SIMULATED_ADDRESSES ?? "";
+
 // ── BscScan ───────────────────────────────────────────────────────────────────
 /** BNB Smart Chain TESTNET (Chain ID 97) */
 const BSCSCAN_API_URL =
@@ -141,6 +157,8 @@ export const config = {
   GOPLUS_API_URL,
   GOPLUS_API_KEY,
   GOPLUS_TIMEOUT_MS,
+  GOPLUS_SIMULATE,
+  GOPLUS_SIMULATED_ADDRESSES,
   BSCSCAN_API_URL,
   BSCSCAN_API_KEY,
   BSCSCAN_TIMEOUT_MS,

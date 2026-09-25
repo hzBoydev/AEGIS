@@ -1,4 +1,11 @@
-export const CONTRACT_ADDRESS = "0x7C2416CB90b1AF3838Bf1D3bFe9C0eEa0e283C46" as const;
+/**
+ * Alamat AegisVault di BNB Chain Testnet.
+ * Di-override lewat NEXT_PUBLIC_CONTRACT_ADDRESS (lihat .env.example).
+ * Fallback = deployment terbaru (escrow timeout 2 jam, oracle two-step,
+ * pause + emergency withdrawal, batas reason 1024 B).
+ */
+export const CONTRACT_ADDRESS = (process.env.NEXT_PUBLIC_CONTRACT_ADDRESS ||
+  "0xaCFCd2005578Aa407aFC3be7553Cad81baf58f10") as `0x${string}`;
 
 export const AEGIS_VAULT_ABI = [
   {

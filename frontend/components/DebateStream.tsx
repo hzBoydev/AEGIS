@@ -2,6 +2,7 @@
 
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
+import { apiUrl } from "@/lib/api";
 
 export interface StreamEvent {
   ts: number;
@@ -73,7 +74,7 @@ export function DebateStreamProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     // EventSource hanya di browser (komponen ini "use client").
-    const source = new EventSource("http://localhost:3001/api/stream");
+    const source = new EventSource(apiUrl("/api/stream"));
 
     source.onopen = () => {
       setConnected(true);

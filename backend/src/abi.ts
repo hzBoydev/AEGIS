@@ -1,9 +1,37 @@
 export const AEGIS_VAULT_ABI = [
   {
     inputs: [],
+    name: "ESCROW_TIMEOUT",
+    outputs: [{ internalType: "uint256", name: "", type: "uint256" }],
+    stateMutability: "view",
+    type: "function",
+  },
+  {
+    inputs: [],
+    name: "MAX_REASON_BYTES",
+    outputs: [{ internalType: "uint256", name: "", type: "uint256" }],
+    stateMutability: "view",
+    type: "function",
+  },
+  {
+    inputs: [],
+    name: "paused",
+    outputs: [{ internalType: "bool", name: "", type: "bool" }],
+    stateMutability: "view",
+    type: "function",
+  },
+  {
+    inputs: [],
     name: "getPendingEscrows",
     outputs: [{ internalType: "bytes32[]", name: "", type: "bytes32[]" }],
     stateMutability: "view",
+    type: "function",
+  },
+  {
+    inputs: [{ internalType: "bytes32", name: "escrowId", type: "bytes32" }],
+    name: "emergencyWithdraw",
+    outputs: [],
+    stateMutability: "nonpayable",
     type: "function",
   },
   {
@@ -40,7 +68,27 @@ export const AEGIS_VAULT_ABI = [
     stateMutability: "view",
     type: "function",
   },
-,
+  {
+    inputs: [{ internalType: "bytes32", name: "escrowId", type: "bytes32" }],
+    name: "expiresAt",
+    outputs: [{ internalType: "uint256", name: "", type: "uint256" }],
+    stateMutability: "view",
+    type: "function",
+  },
+  {
+    inputs: [{ internalType: "bytes32", name: "escrowId", type: "bytes32" }],
+    name: "isExpired",
+    outputs: [{ internalType: "bool", name: "", type: "bool" }],
+    stateMutability: "view",
+    type: "function",
+  },
+  {
+    inputs: [{ internalType: "bytes32", name: "escrowId", type: "bytes32" }],
+    name: "claimExpired",
+    outputs: [],
+    stateMutability: "nonpayable",
+    type: "function",
+  },
   {
     type: "event",
     name: "EscrowCreated",
@@ -62,8 +110,17 @@ export const AEGIS_VAULT_ABI = [
     type: "event",
     name: "EscrowReverted",
     inputs: [
-      { indexed: true,  name: "escrowId", type: "bytes32" },
+      { indexed: true,  name: "escrowId",  type: "bytes32" },
       { indexed: false, name: "reason",   type: "string"  },
+    ],
+  },
+  {
+    type: "event",
+    name: "EscrowExpired",
+    inputs: [
+      { indexed: true,  name: "escrowId", type: "bytes32" },
+      { indexed: true,  name: "claimer",  type: "address" },
+      { indexed: false, name: "amount",   type: "uint256" },
     ],
   },
 ] as const;

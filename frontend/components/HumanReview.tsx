@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { formatTimestamp, truncateAddress } from "@/lib/utils";
+import { fetchJson, shortApiMessage } from "@/lib/api";
 
 interface PendingHuman {
   id: number;
@@ -15,6 +16,26 @@ interface PendingHuman {
   risk_level: string | null;
   human_reason: string | null;
   created_at: string;
+}
+
+interface PendingEnvelope {
+  success: boolean;
+  data: PendingHuman[];
+  error?: string;
+}
+
+interface VoteEnvelope {
+  success: boolean;
+  data?: { txHash: string };
+  error?: string;
+}
+
+async function fetchPending(): Promise<PendingHuman[]> {
+  const json = await fetchJson<PendingEnvelope>("/api/human/pending");
+  if (!json.success) {
+    throw new Error(json.error ?? "Antrean review tidak bisa dimuat.");
+  }
+  return dedupeByEscrow(json.data ?? []);
 }
 
 /** 1 escrow = 1 kartu vote (defensive — backend sudah UNIQUE). */
@@ -41,14 +62,13 @@ export default function HumanReview() {
 
     async function load() {
       try {
-        const res = await fetch("http://localhost:3001/api/human/pending");
-        const json = await res.json();
-        if (alive && json.success) {
-          setItems(dedupeByEscrow(json.data ?? []));
-          setError(null);
-        }
-      } catch {
-        /* backend mungkin belum jalan */
+        const rows = await fetchPending();
+        if (!alive) return;
+        setItems(rows);
+        setError(null);
+      } catch (err) {
+        if (!alive) return;
+        setError(shortApiMessage(err));
       } finally {
         if (alive) setLoading(false);
       }
@@ -66,12 +86,10 @@ export default function HumanReview() {
 
   async function refresh() {
     try {
-      const res = await fetch("http://localhost:3001/api/human/pending");
-      const json = await res.json();
-      if (json.success) setItems(dedupeByEscrow(json.data ?? []));
+      setItems(await fetchPending());
       setError(null);
-    } catch {
-      /* ignore */
+    } catch (err) {
+      setError(shortApiMessage(err));
     }
   }
 
@@ -80,14 +98,13 @@ export default function HumanReview() {
     setError(null);
     setOkMsg(null);
     try {
-      const res = await fetch("http://localhost:3001/api/human/vote", {
+      const json = await fetchJson<VoteEnvelope>("/api/human/vote", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ escrowId, approve }),
       });
-      const json = await res.json();
-      if (!json.success) {
-        setError(json.error ?? "Vote gagal");
+      if (!json.success || !json.data) {
+        setError(json.error ?? "Vote gagal dikirim ke backend.");
         return;
       }
       setOkMsg(
@@ -95,7 +112,7 @@ export default function HumanReview() {
       );
       await refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Vote gagal");
+      setError(shortApiMessage(err));
     } finally {
       setVotingId(null);
     }

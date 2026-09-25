@@ -18,25 +18,154 @@ const contractAddress = config.CONTRACT_ADDRESS;
 // the same escrow within the same session.
 const processingOrDone = new Set<string>();
 
+// Escrow yang ditunda karena kontrak pause — dipakai supaya tidak spam notifikasi.
+const pausedDeferred = new Set<string>();
+
 // ── Shared: submit fulfillVerification on-chain ───────────────────────────────
+/**
+ * Potong `reason` agar tetap dalam batas kontrak (MAX_REASON_BYTES).
+ * Dipotong di batas code point UTF-8 supaya tidak menghasilkan byte parsial.
+ */
+function truncateReason(reason: string, maxBytes: number): string {
+  if (Buffer.byteLength(reason, "utf8") <= maxBytes) return reason;
+  const sliced = Buffer.from(reason, "utf8").subarray(0, maxBytes);
+  const decoded = new TextDecoder("utf-8").decode(sliced);
+  return decoded.replace(/�+$/, "");
+}
+
+const MAX_REASON_FALLBACK_BYTES = 1024;
+let maxReasonBytesCache: number | undefined;
+
+async function readMaxReasonBytes(): Promise<number> {
+  if (maxReasonBytesCache !== undefined) return maxReasonBytesCache;
+  try {
+    const value = await publicClient.readContract({
+      address: contractAddress,
+      abi: AEGIS_VAULT_ABI,
+      functionName: "MAX_REASON_BYTES",
+    });
+    maxReasonBytesCache = Number(value as bigint);
+  } catch {
+    maxReasonBytesCache = MAX_REASON_FALLBACK_BYTES;
+  }
+  return maxReasonBytesCache;
+}
+
 export async function submitFulfillment(
   escrowId: `0x${string}`,
   eligible: boolean,
   reason: string
 ): Promise<string> {
   console.log(`\n   Submitting decision to smart contract...`);
+
+  const maxBytes = await readMaxReasonBytes();
+  const safeReason = truncateReason(reason, maxBytes);
+  if (safeReason !== reason) {
+    console.warn(
+      `   ⚠️ Alasan dipotong ${Buffer.byteLength(reason, "utf8") - Buffer.byteLength(safeReason, "utf8")} B` +
+        ` (batas on-chain: ${maxBytes} B)`
+    );
+  }
+
+  try {
+    const txHash = await walletClient.writeContract({
+      address: contractAddress,
+      abi: AEGIS_VAULT_ABI,
+      functionName: "fulfillVerification",
+      args: [escrowId, eligible, safeReason],
+      chain: bscTestnet,
+      account,
+    });
+    console.log(`   ✅ Transaction submitted: ${txHash}`);
+    await publicClient.waitForTransactionReceipt({ hash: txHash });
+    console.log(`   ✅ Confirmed on-chain.`);
+    return txHash;
+  } catch (err) {
+    // Contract revert EscrowTimeout: escrow sudah lewat ESCROW_TIMEOUT dan
+    // sudah (atau sedang) diklaim sender via claimExpired().
+    if (isEscrowTimeoutError(err)) {
+      throw new Error(
+        `Escrow sudah kedaluwarsa (melewati ESCROW_TIMEOUT) — dana sudah/akan dikembalikan ke sender via claimExpired().`
+      );
+    }
+    throw err;
+  }
+}
+
+function isEscrowTimeoutError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const e = err as { name?: string; shortMessage?: string; message?: string };
+  const haystack = `${e.name ?? ""} ${e.shortMessage ?? ""} ${e.message ?? ""}`;
+  return (
+    haystack.includes("EscrowTimeout") ||
+    haystack.toLowerCase().includes("escrowtimeout")
+  );
+}
+
+// ── Shared: klaim escrow kedaluwarsa → dana kembali ke sender ────────────────
+export async function submitExpiredClaim(
+  escrowId: `0x${string}`
+): Promise<string> {
   const txHash = await walletClient.writeContract({
     address: contractAddress,
     abi: AEGIS_VAULT_ABI,
-    functionName: "fulfillVerification",
-    args: [escrowId, eligible, reason],
+    functionName: "claimExpired",
+    args: [escrowId],
     chain: bscTestnet,
     account,
   });
-  console.log(`   ✅ Transaction submitted: ${txHash}`);
   await publicClient.waitForTransactionReceipt({ hash: txHash });
-  console.log(`   ✅ Confirmed on-chain.`);
+  console.log(`   ⏳ Escrow expired — dana dikembalikan ke sender: ${txHash}`);
   return txHash;
+}
+
+async function isEscrowExpired(escrowId: `0x${string}`): Promise<boolean> {
+  try {
+    return (await publicClient.readContract({
+      address: contractAddress,
+      abi: AEGIS_VAULT_ABI,
+      functionName: "isExpired",
+      args: [escrowId],
+    })) as boolean;
+  } catch {
+    return false; // kontrak lama tanpa fitur expiry
+  }
+}
+
+/** True saat owner menyalakan pause darurat (submit/fulfill diblokir). */
+async function isContractPaused(): Promise<boolean> {
+  try {
+    return (await publicClient.readContract({
+      address: contractAddress,
+      abi: AEGIS_VAULT_ABI,
+      functionName: "paused",
+    })) as boolean;
+  } catch {
+    return false; // kontrak lama tanpa fitur pause
+  }
+}
+
+// ── Shared: ESCROW_TIMEOUT dari kontrak (cached) ─────────────────────────────
+// Null = kontrak lama (belum punya ESCROW_TIMEOUT) → jangan asumsikan expiry.
+let escrowTimeoutSecCache: number | null | undefined;
+
+async function readEscrowTimeoutSec(): Promise<number | null> {
+  if (escrowTimeoutSecCache !== undefined) return escrowTimeoutSecCache;
+  try {
+    const value = await publicClient.readContract({
+      address: contractAddress,
+      abi: AEGIS_VAULT_ABI,
+      functionName: "ESCROW_TIMEOUT",
+    });
+    escrowTimeoutSecCache = Number(value as bigint);
+    console.log(`⏳ [Escrow] ESCROW_TIMEOUT = ${escrowTimeoutSecCache}s`);
+  } catch {
+    console.warn(
+      `⏳ [Escrow] Kontrak tidak punya ESCROW_TIMEOUT (build lama?) — fitur expiry dinonaktifkan.`
+    );
+    escrowTimeoutSecCache = null;
+  }
+  return escrowTimeoutSecCache;
 }
 
 // ── Core: process a single escrow by ID ──────────────────────────────────────
@@ -66,6 +195,30 @@ async function processEscrow(
   console.log(`\n>> [${trigger.toUpperCase()}] Processing escrow: ${escrowId}`);
 
   try {
+    // ── Guard: kontrak sedang PAUSED (mode darurat) ───────────────────────────
+    // Jangan buang panggilan LLM — tx fulfillVerification pasti revert.
+    // Hapus dari processingOrDone supaya fallback poll mengulang setelah unpause.
+    if (await isContractPaused()) {
+      processingOrDone.delete(escrowId);
+      if (!pausedDeferred.has(escrowId)) {
+        pausedDeferred.add(escrowId);
+        console.log(
+          `[${trigger.toUpperCase()}] Tunda: kontrak sedang pause (mode darurat).`
+        );
+        publish({
+          escrowId,
+          phase: "escrow",
+          status: "fail",
+          label: "Kontrak di-pause",
+          detail:
+            "Keputusan ditunda sampai unpause — user bisa emergencyWithdraw selama pause.",
+          data: { paused: true },
+        });
+      }
+      return;
+    }
+    pausedDeferred.delete(escrowId);
+
     // ── Fetch escrow data from contract ───────────────────────────────────────
     const escrowData = await publicClient.readContract({
       address: contractAddress,
@@ -73,7 +226,48 @@ async function processEscrow(
       functionName: "getEscrowData",
       args: [escrowId],
     }) as readonly [string, string, bigint, number, bigint];
-    const [sender, recipient, amount] = escrowData;
+    const [sender, recipient, amount, status, createdAt] = escrowData;
+
+    // ── Guard: escrow sudah final / kadaluwarsa di kontrak ────────────────────
+    // Status: 0 PENDING, 1 COMPLETED, 2 REVERTED, 3 EXPIRED
+    if (Number(status) !== 0) {
+      console.log(
+        `[${trigger.toUpperCase()}] Skip: escrow sudah final on-chain (status=${status}).`
+      );
+      processingOrDone.add(escrowId);
+      return;
+    }
+
+    const timeoutSec = await readEscrowTimeoutSec();
+    if (
+      timeoutSec !== null &&
+      Math.floor(Date.now() / 1000) >= Number(createdAt) + timeoutSec
+    ) {
+      console.log(
+        `[${trigger.toUpperCase()}] Escrow kedaluwarsa — auto-claim dana kembali ke sender.`
+      );
+      let claimTx: string | undefined;
+      try {
+        claimTx = await submitExpiredClaim(escrowId);
+      } catch (err) {
+        console.warn(
+          `   ⚠️ Auto-claimExpired gagal:`,
+          err instanceof Error ? err.message : err
+        );
+      }
+      publish({
+        escrowId,
+        phase: "escrow",
+        status: "fail",
+        label: "Escrow kedaluwarsa",
+        detail: claimTx
+          ? `Melewati ESCROW_TIMEOUT — dana dikembalikan ke sender. ${claimTx}`
+          : "Melewati ESCROW_TIMEOUT — dana bisa diklaim kembali oleh sender.",
+        data: { ...(claimTx ? { claimTx } : {}), expired: true },
+      });
+      processingOrDone.add(escrowId);
+      return;
+    }
 
     const amountBNB = Number(formatEther(amount));
 
@@ -192,6 +386,47 @@ export async function applyHumanVote(
 
   const aiRec = row.eligible === 1 ? "RELEASE" : "REJECT";
   const voteLabel = approve ? "RELEASE" : "REJECT";
+
+  // ── Escrow sudah lewat ESCROW_TIMEOUT → vote tidak bisa masuk on-chain ─────
+  // Kembalikan dana ke sender via claimExpired() supaya vote tetap "beres".
+  if (await isEscrowExpired(escrowId as `0x${string}`)) {
+    const claimTx = await submitExpiredClaim(escrowId as `0x${string}`);
+    const expiredReason =
+      `Escrow kedaluwarsa (melewati ESCROW_TIMEOUT) — dana dikembalikan ke sender. ` +
+      `Vote manusia "${voteLabel}" tidak dieksekusi on-chain.`;
+
+    const ok = finalizeHumanDecision({
+      escrowId,
+      humanVote: approve,
+      humanReason: row.human_reason ?? "escrow expired",
+      finalReason: expiredReason,
+      decidedBy: "human",
+      txHash: claimTx,
+    });
+    if (!ok) {
+      throw new Error("Gagal update DB setelah claimExpired (mungkin sudah difinalisasi)");
+    }
+
+    publish({
+      escrowId,
+      phase: "human",
+      status: "fail",
+      label: "Escrow kedaluwarsa — vote tidak berlaku",
+      detail: expiredReason,
+      data: { humanVote: approve, claimTx },
+    });
+    publish({
+      escrowId,
+      phase: "final",
+      status: "done",
+      label: "DIKEMBALIKAN (escrow expired)",
+      detail: expiredReason,
+      data: { eligible: false, decidedBy: "expired", claimTx },
+    });
+
+    return { txHash: claimTx };
+  }
+
   const finalReason =
     `Keputusan manusia: ${voteLabel}. ` +
     `Rekomendasi AI: ${aiRec} (confidence ${(row.confidence * 100).toFixed(0)}%). ` +

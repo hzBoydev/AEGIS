@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { useAccount } from "wagmi";
 import { formatTimestamp, truncateAddress } from "@/lib/utils";
+import { fetchJson, shortApiMessage } from "@/lib/api";
 
 interface Decision {
   id: number;
@@ -25,6 +26,14 @@ interface HistoryPayload {
   addr: string;
   rows: Decision[];
   total: number;
+  error?: string;
+}
+
+interface EscrowApiEnvelope {
+  success: boolean;
+  data: Decision[];
+  total?: number;
+  error?: string;
 }
 
 function useEscrowHistory(limit: number, address: string | undefined) {
@@ -39,23 +48,26 @@ function useEscrowHistory(limit: number, address: string | undefined) {
 
     async function fetchData() {
       try {
-        const res = await fetch(
-          `http://localhost:3001/api/escrows?limit=${limit}&address=${encodeURIComponent(addr)}`
+        const json = await fetchJson<EscrowApiEnvelope>(
+          `/api/escrows?limit=${limit}&address=${encodeURIComponent(addr)}`
         );
-        const json = await res.json();
         if (!alive) return;
         setPayload(
           json.success
             ? {
                 addr,
-                rows: json.data,
-                total: typeof json.total === "number" ? json.total : json.data.length,
+                rows: json.data ?? [],
+                total:
+                  typeof json.total === "number"
+                    ? json.total
+                    : (json.data ?? []).length,
               }
-            : { addr, rows: [], total: 0 }
+            : { addr, rows: [], total: 0, error: json.error ?? "Permintaan ditolak backend." }
         );
       } catch (err) {
+        if (!alive) return;
         console.error("Gagal fetch riwayat:", err);
-        if (alive) setPayload({ addr, rows: [], total: 0 });
+        setPayload({ addr, rows: [], total: 0, error: shortApiMessage(err) });
       }
     }
     void fetchData();
@@ -70,15 +82,18 @@ function useEscrowHistory(limit: number, address: string | undefined) {
   return {
     decisions: fresh?.rows ?? [],
     total: fresh?.total ?? 0,
+    error: fresh?.error ?? null,
     loading: Boolean(address) && fresh === null,
   };
 }
 
-export default function EscrowHistory() {
-  const { address } = useAccount();
+export default function EscrowHistory({ address: addressOverride }: { address?: string }) {
+  const { address: walletAddress } = useAccount();
+  const address = addressOverride ?? walletAddress;
+  const isFiltered = Boolean(addressOverride && addressOverride !== walletAddress);
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [expandedId, setExpandedId] = useState<number | null>(null);
-  const { decisions, total, loading } = useEscrowHistory(visibleCount, address);
+  const { decisions, total, loading, error } = useEscrowHistory(visibleCount, address);
   const hasMore = total > decisions.length;
 
   return (
@@ -88,28 +103,40 @@ export default function EscrowHistory() {
           <p className="eyebrow">Catatan on-chain</p>
           <p className="font-display mt-1 text-xl text-ink">Riwayat</p>
           <p className="text-muted mt-1 text-xs">
-            Transfer yang melibatkan dompet terhubung.
+            {isFiltered
+              ? `Transfer yang melibatkan alamat ${truncateAddress(address ?? "")}.`
+              : "Transfer yang melibatkan dompet terhubung."}
           </p>
         </div>
-        {!loading && total > 0 && <span className="badge">{total} transaksi</span>}
+        {!loading && !error && total > 0 && (
+          <span className="badge">{total} transaksi</span>
+        )}
       </div>
 
       <div className="card-pad">
+        {error && (
+          <div className="alert alert-danger mb-4" role="alert">
+            <span aria-hidden>✕</span>
+            <span>{error}</span>
+          </div>
+        )}
+
         {!address ? (
           <div className="empty-note">
-            Sambungkan wallet untuk melihat riwayat transfer dari dompetmu.
+            Sambungkan wallet — atau cari alamat mana pun — untuk melihat riwayat
+            transfer.
           </div>
         ) : loading ? (
           <div className="text-muted flex items-center gap-2 text-sm">
             <span className="pulse h-1.5 w-1.5 rounded-full bg-[var(--bronze)]" />
             Memuat riwayat
           </div>
-        ) : decisions.length === 0 ? (
+        ) : decisions.length === 0 && !error ? (
           <div className="empty-note">
-            Dompet ini belum punya transaksi yang diperiksa. Kirim token untuk
+            Alamat ini belum punya transaksi yang diperiksa. Kirim token untuk
             melihat Aegis bekerja.
           </div>
-        ) : (
+        ) : decisions.length === 0 ? null : (
           <>
             <ol className="timeline">
               {decisions.map((d) => {

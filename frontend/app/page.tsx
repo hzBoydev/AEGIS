@@ -12,6 +12,8 @@ import LiveDebate from "@/components/LiveDebate";
 import DebateHistory from "@/components/DebateHistory";
 import DebateModal from "@/components/DebateModal";
 import EscrowHistory from "@/components/EscrowHistory";
+import AddressFilter from "@/components/AddressFilter";
+import { isValidAddress } from "@/lib/utils";
 
 const NAV = [
   { id: "kirim-token", label: "Kirim Token" },
@@ -73,9 +75,20 @@ function ConnectCard() {
 }
 
 export default function Home() {
-  const { isConnected } = useAccount();
+  const { isConnected, address: walletAddress } = useAccount();
   const [modalOpen, setModalOpen] = useState(false);
   const [activeSection, setActiveSection] = useState<string>(NAV[0].id);
+
+  // ── Multi-wallet: filter alamat bersama untuk arsip sidang & riwayat ────────
+  const [filterAddress, setFilterAddress] = useState("");
+  const query = filterAddress.trim();
+  // Query kosong → dompet terhubung. Query tidak valid → "" (filter menampilkan error).
+  const activeAddress =
+    query.length === 0
+      ? walletAddress
+      : isValidAddress(query)
+      ? query
+      : "";
 
   const openModal = useCallback(() => setModalOpen(true), []);
   const closeModal = useCallback(() => setModalOpen(false), []);
@@ -183,7 +196,13 @@ export default function Home() {
           </section>
 
           <section id="arsip-sidang" className="section-block" data-reveal>
-            <DebateHistory />
+            <AddressFilter
+              id="filter-arsip"
+              value={filterAddress}
+              onChange={setFilterAddress}
+              walletAddress={walletAddress}
+            />
+            <DebateHistory address={activeAddress} />
           </section>
 
           <section id="tata-cara" className="section-block" data-reveal>
@@ -191,7 +210,13 @@ export default function Home() {
           </section>
 
           <section id="riwayat" className="section-block" data-reveal>
-            <EscrowHistory />
+            <AddressFilter
+              id="filter-riwayat"
+              value={filterAddress}
+              onChange={setFilterAddress}
+              walletAddress={walletAddress}
+            />
+            <EscrowHistory address={activeAddress} />
           </section>
         </main>
 

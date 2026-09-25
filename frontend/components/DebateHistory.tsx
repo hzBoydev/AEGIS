@@ -4,6 +4,8 @@ import { useEffect, useState } from "react";
 import { useAccount } from "wagmi";
 import { DebateEventRow } from "@/components/LiveDebate";
 import type { StreamEvent } from "@/components/DebateStream";
+import { fetchJson, shortApiMessage } from "@/lib/api";
+import { truncateAddress } from "@/lib/utils";
 
 interface DebateSession {
   escrowId: string;
@@ -48,10 +50,20 @@ interface DebatePayload {
   addr: string;
   rows: DebateSession[];
   total: number;
+  error?: string;
 }
 
-export default function DebateHistory() {
-  const { address } = useAccount();
+interface DebateApiEnvelope {
+  success: boolean;
+  data: DebateSession[];
+  total?: number;
+  error?: string;
+}
+
+export default function DebateHistory({ address: addressOverride }: { address?: string }) {
+  const { address: walletAddress } = useAccount();
+  const address = addressOverride ?? walletAddress;
+  const isFiltered = Boolean(addressOverride && addressOverride !== walletAddress);
   // Payload diikat ke address — wallet berganti ⇒ data lama dianggap basi.
   const [payload, setPayload] = useState<DebatePayload | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
@@ -60,6 +72,7 @@ export default function DebateHistory() {
   const fresh = payload && address && payload.addr === address ? payload : null;
   const sessions = fresh?.rows ?? [];
   const total = fresh?.total ?? 0;
+  const error = fresh?.error ?? null;
   const loading = Boolean(address) && fresh === null;
   const hasMore = total > sessions.length;
 
@@ -70,10 +83,9 @@ export default function DebateHistory() {
 
     async function load() {
       try {
-        const res = await fetch(
-          `http://localhost:3001/api/debates?limit=${visibleCount}&address=${encodeURIComponent(addr)}`
+        const json = await fetchJson<DebateApiEnvelope>(
+          `/api/debates?limit=${visibleCount}&address=${encodeURIComponent(addr)}`
         );
-        const json = await res.json();
         if (!alive) return;
         if (json.success) {
           // Sembunyikan arsip red-team dari UI.
@@ -86,11 +98,16 @@ export default function DebateHistory() {
             total: typeof json.total === "number" ? json.total : rows.length,
           });
         } else {
-          setPayload({ addr, rows: [], total: 0 });
+          setPayload({
+            addr,
+            rows: [],
+            total: 0,
+            error: json.error ?? "Permintaan ditolak backend.",
+          });
         }
-      } catch {
-        /* backend mungkin belum jalan */
-        if (alive) setPayload({ addr, rows: [], total: 0 });
+      } catch (err) {
+        if (!alive) return;
+        setPayload({ addr, rows: [], total: 0, error: shortApiMessage(err) });
       }
     }
 
@@ -111,25 +128,34 @@ export default function DebateHistory() {
           <p className="eyebrow">Arsip otomatis</p>
           <p className="font-display mt-1 text-xl text-ink">Riwayat Sidang AI</p>
           <p className="text-muted mt-1 text-xs">
-            Rekaman sesi Investigator → Advocate → Judge untuk escrow dompetmu.
+            {isFiltered
+              ? `Rekaman sesi Investigator → Advocate → Judge untuk alamat ${truncateAddress(address ?? "")}.`
+              : "Rekaman sesi Investigator → Advocate → Judge untuk escrow dompetmu."}
           </p>
         </div>
-        {!loading && total > 0 && <span className="badge">{total} sesi</span>}
+        {!loading && !error && total > 0 && <span className="badge">{total} sesi</span>}
       </div>
 
       <div className="card-pad flex flex-col gap-3">
+        {error && (
+          <div className="alert alert-danger" role="alert">
+            <span aria-hidden>✕</span>
+            <span>{error}</span>
+          </div>
+        )}
+
         {!address ? (
           <div className="empty-note">
-            Sambungkan wallet untuk melihat arsip sidang dari dompetmu.
+            Sambungkan wallet — atau cari alamat mana pun — untuk melihat arsip sidang.
           </div>
         ) : loading && sessions.length === 0 ? (
           <div className="text-muted flex items-center gap-2 text-sm">
             <span className="pulse h-1.5 w-1.5 rounded-full bg-[var(--bronze)]" />
             Memuat arsip sidang
           </div>
-        ) : sessions.length === 0 ? (
+        ) : sessions.length === 0 && !error ? (
           <div className="empty-note">
-            Belum ada arsip sidang untuk dompet ini. Setiap escrow yang disidang AI
+            Belum ada arsip sidang untuk alamat ini. Setiap escrow yang disidang AI
             akan otomatis direkam di sini.
           </div>
         ) : (
