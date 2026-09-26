@@ -27,12 +27,12 @@ export const PHASE_META: Record<StreamEvent["phase"], { title: string; tint: str
   escrow: { title: "Escrow", tint: "var(--bronze)" },
   evidence: { title: "Bukti", tint: "var(--bronze)" },
   rules: { title: "Aturan", tint: "var(--bronze)" },
-  investigator: { title: "Investigator", tint: "var(--text-primary)" },
+  investigator: { title: "Investigasi", tint: "var(--text-primary)" },
   tools: { title: "Tool Calling", tint: "var(--text-primary)" },
-  advocate: { title: "Advocate", tint: "var(--danger)" },
-  judge: { title: "Judge", tint: "var(--safe)" },
-  final: { title: "Putusan", tint: "var(--text-primary)" },
-  human: { title: "Manusia", tint: "var(--bronze)" },
+  advocate: { title: "Advokasi", tint: "var(--text-secondary)" },
+  judge: { title: "Putusan", tint: "var(--safe)" },
+  final: { title: "Hasil Akhir", tint: "var(--text-primary)" },
+  human: { title: "Tinjauan Manual", tint: "var(--bronze)" },
 };
 
 export const PHASE_ORDER = [
@@ -63,27 +63,14 @@ interface DebateContextValue {
   finished: boolean;
   finalEv: StreamEvent | undefined;
   last: StreamEvent | undefined;
-  /** true = sesi baru sudah dimulai tapi belum ada satu pun event masuk. */
   awaitingSession: boolean;
 }
 
-/**
- * Penanda sesi baru, dibuat di event handler transaksi (bukan saat render).
- * - key : penanda perubahan; naik tiap transaksi baru.
- * - at  : waktu kirim (ms) — batas bawah ts event yang boleh tampil.
- */
 export interface NewSession {
   key: number;
   at: number;
 }
 
-/**
- * Batas sesi. Dipasang saat transaksi baru dikirim supaya riwayat sidang lama
- * tidak sempat tampil (sekalipun sepersekian detik) di popup / kartu live.
- * - sinceTs : event backend dengan ts <= ini dianggap milik sesi sebelumnya.
- * - staleId : escrow yang sedang aktif saat reset — event barunya yang datang
- *             belakangan tetap dibuang (escrow lama bisa masih berjalan).
- */
 interface SessionEpoch {
   sinceTs: number;
   staleId: string | null;
@@ -96,7 +83,6 @@ export function DebateStreamProvider({
   newSession,
 }: {
   children: ReactNode;
-  /** Dinaikkan tiap transaksi baru dikirim → sesi sidang di-reset. */
   newSession?: NewSession;
 }) {
   const [events, setEvents] = useState<StreamEvent[]>([]);
@@ -105,10 +91,6 @@ export function DebateStreamProvider({
   const [epoch, setEpoch] = useState<SessionEpoch | null>(null);
   const [seenSessionKey, setSeenSessionKey] = useState(newSession?.key ?? 0);
 
-  // Reset di fase render: React langsung me-render ulang sebelum commit, jadi
-  // tidak ada satu frame pun yang sempat menampilkan riwayat sesi lama.
-  // Pakai ts event backend bila ada (jam backend → bebas selisih jam frontend);
-  // "at" hanya dipakai saat buffer masih kosong.
   if (newSession && newSession.key !== seenSessionKey) {
     const lastEv = events[events.length - 1];
     setSeenSessionKey(newSession.key);
@@ -119,7 +101,6 @@ export function DebateStreamProvider({
   }
 
   useEffect(() => {
-    // EventSource hanya di browser (komponen ini "use client").
     const source = new EventSource(apiUrl("/api/stream"));
 
     source.onopen = () => {
@@ -128,20 +109,19 @@ export function DebateStreamProvider({
     };
     source.onerror = () => {
       setConnected(false);
-      setSseError("Stream terputus — mencoba ulang otomatis…");
+      setSseError("Koneksi live terputus — mencoba menyambung ulang otomatis…");
     };
 
     source.onmessage = (msg) => {
       try {
         const ev = JSON.parse(msg.data) as StreamEvent;
-        // Sembunyikan event red-team dari UI (suite tetap jalan di backend).
         if ((ev.phase as string) === "redteam") return;
         setEvents((prev) => {
           const next = [...prev, ev];
           return next.length > 60 ? next.slice(next.length - 60) : next;
         });
       } catch {
-        // ignore malformed
+        // ignore
       }
     };
 
@@ -151,11 +131,9 @@ export function DebateStreamProvider({
   }, []);
 
   const value = useMemo<DebateContextValue>(() => {
-    // Sesi aktif = event sesudah batas reset (bila ada) dan bukan escrow lama.
     const active = epoch
       ? events.filter((e) => e.ts > epoch.sinceTs && e.escrowId !== epoch.staleId)
       : events;
-    // Sesi = semua event ber-escrowId sama dengan event terakhir.
     const last = active[active.length - 1];
     const currentId = last?.escrowId ?? null;
     const sessionEvents = currentId

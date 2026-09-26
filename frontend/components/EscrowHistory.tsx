@@ -37,8 +37,6 @@ interface EscrowApiEnvelope {
 }
 
 function useEscrowHistory(limit: number, address: string | undefined) {
-  // Data selalu "diikat" ke address pengambilannya — saat wallet berganti,
-  // payload lama dianggap basi sehingga tampilan kosong tanpa reset state.
   const [payload, setPayload] = useState<HistoryPayload | null>(null);
 
   useEffect(() => {
@@ -66,7 +64,6 @@ function useEscrowHistory(limit: number, address: string | undefined) {
         );
       } catch (err) {
         if (!alive) return;
-        console.error("Gagal fetch riwayat:", err);
         setPayload({ addr, rows: [], total: 0, error: shortApiMessage(err) });
       }
     }
@@ -100,16 +97,16 @@ export default function EscrowHistory({ address: addressOverride }: { address?: 
     <section className="card overflow-hidden">
       <div className="card-head">
         <div>
-          <p className="eyebrow">Catatan on-chain</p>
-          <p className="font-display mt-1 text-xl text-ink">Riwayat</p>
+          <p className="eyebrow">Catatan On-Chain</p>
+          <p className="font-display mt-1 text-xl text-ink">Riwayat Transaksi & Escrow</p>
           <p className="text-muted mt-1 text-xs">
             {isFiltered
-              ? `Transfer yang melibatkan alamat ${truncateAddress(address ?? "")}.`
-              : "Transfer yang melibatkan dompet terhubung."}
+              ? `Semua transfer yang melibatkan alamat ${truncateAddress(address ?? "")}.`
+              : "Semua transfer yang melibatkan dompet terhubung."}
           </p>
         </div>
         {!loading && !error && total > 0 && (
-          <span className="badge">{total} transaksi</span>
+          <span className="badge">{total} Transaksi</span>
         )}
       </div>
 
@@ -123,18 +120,16 @@ export default function EscrowHistory({ address: addressOverride }: { address?: 
 
         {!address ? (
           <div className="empty-note">
-            Sambungkan wallet — atau cari alamat mana pun — untuk melihat riwayat
-            transfer.
+            Sambungkan dompet Anda — atau cari alamat mana pun di atas — untuk melihat riwayat transfer.
           </div>
         ) : loading ? (
-          <div className="text-muted flex items-center gap-2 text-sm">
-            <span className="pulse h-1.5 w-1.5 rounded-full bg-[var(--bronze)]" />
-            Memuat riwayat
+          <div className="text-muted flex items-center gap-2 text-sm py-2">
+            <span className="pulse-bronze h-2 w-2 rounded-full bg-[var(--bronze)]" />
+            Memuat riwayat transaksi…
           </div>
         ) : decisions.length === 0 && !error ? (
           <div className="empty-note">
-            Alamat ini belum punya transaksi yang diperiksa. Kirim token untuk
-            melihat Aegis bekerja.
+            Belum ada transaksi yang tercatat untuk alamat ini. Kirim token untuk menguji perlindungan Aegis.
           </div>
         ) : decisions.length === 0 ? null : (
           <>
@@ -147,10 +142,10 @@ export default function EscrowHistory({ address: addressOverride }: { address?: 
                   ? "var(--safe)"
                   : "var(--danger)";
                 const label = pending
-                  ? "menunggu veto manusia"
+                  ? "Menunggu Tinjauan Manual"
                   : d.eligible
-                  ? "diteruskan"
-                  : "dikembalikan";
+                  ? "Berhasil Diteruskan"
+                  : "Dibatalkan & Dikembalikan";
                 const expanded = expandedId === d.id;
                 const longReason = d.reasoning.length > 90;
 
@@ -161,36 +156,36 @@ export default function EscrowHistory({ address: addressOverride }: { address?: 
                     style={{ "--dot-color": tone } as React.CSSProperties}
                   >
                     <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-                      <p className="font-display text-lg text-ink">
+                      <p className="font-display text-lg font-bold text-ink">
                         {d.amount} BNB{" "}
-                        <span className="font-sans text-sm" style={{ color: tone }}>
+                        <span className="font-sans text-xs font-semibold px-2 py-0.5 rounded-full ml-1" style={{ color: tone, background: `color-mix(in srgb, ${tone} 12%, transparent)` }}>
                           {label}
                         </span>
                       </p>
                       <span className="text-muted text-xs whitespace-nowrap">
-                        {Math.round(d.confidence * 100)}% yakin
+                        Keyakinan: {Math.round(d.confidence * 100)}%
                       </span>
                     </div>
                     <p className="text-muted mt-1 text-xs">
-                      ke {truncateAddress(d.recipient)}
+                      Tujuan: <span className="font-mono text-ink">{truncateAddress(d.recipient)}</span>
                       {d.created_at && <> · {formatTimestamp(d.created_at)}</>}
                     </p>
                     <button
                       type="button"
-                      className="mt-2 block w-full cursor-pointer text-left"
+                      className="mt-2.5 block w-full cursor-pointer text-left rounded-lg bg-[var(--surface)] p-2.5 border border-[var(--border)] transition-all hover:border-[var(--bronze)]"
                       onClick={() => setExpandedId(expanded ? null : d.id)}
                       aria-expanded={expanded}
                     >
                       <span
-                        className={`text-ink text-sm leading-relaxed ${
+                        className={`text-ink text-xs leading-relaxed ${
                           expanded || !longReason ? "" : "line-clamp-2"
                         }`}
                       >
                         {d.reasoning}
                       </span>
                       {!expanded && longReason && (
-                        <span className="text-muted mt-1 block text-[11px]">
-                          klik untuk selengkapnya
+                        <span className="text-bronze mt-1 block text-[11px] font-semibold">
+                          Lihat selengkapnya ▾
                         </span>
                       )}
                     </button>
@@ -206,10 +201,10 @@ export default function EscrowHistory({ address: addressOverride }: { address?: 
                   className="btn btn-ghost btn-sm"
                   onClick={() => setVisibleCount((c) => c + PAGE_SIZE)}
                 >
-                  Muat lebih banyak
+                  Muat Lebih Banyak
                 </button>
                 <p className="text-muted text-[11px]">
-                  Menampilkan {decisions.length} dari {total}
+                  Menampilkan {decisions.length} dari {total} transaksi
                 </p>
               </div>
             )}

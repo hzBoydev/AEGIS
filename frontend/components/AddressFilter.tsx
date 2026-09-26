@@ -3,20 +3,12 @@
 import { isValidAddress, truncateAddress } from "@/lib/utils";
 
 interface AddressFilterProps {
-  /** Nilai input (mentah, bisa belum tervalidasi). */
   value: string;
   onChange: (value: string) => void;
-  /** Address dompet yang tersambung (untuk tombol "Dompet saya"). */
   walletAddress?: string;
-  /** ID unik untuk label/input (agar bisa dipakai di >1 section). */
   id: string;
 }
 
-/**
- * Filter alamat untuk arsip sidang & riwayat escrow.
- * Default: dompet terhubung. Bisa diganti alamat mana pun (multi-wallet).
- * State diangkat ke page.tsx supaya kedua section selalu sinkron.
- */
 export default function AddressFilter({
   value,
   onChange,
@@ -30,16 +22,16 @@ export default function AddressFilter({
   const target = filtered ? trimmed : walletAddress;
 
   return (
-    <div className="mb-3 flex flex-col gap-1.5">
+    <div className="mb-3.5 flex flex-col gap-1.5">
       <div className="flex flex-wrap items-center gap-2">
-        <label htmlFor={id} className="field-label mb-0 shrink-0">
-          Alamat
+        <label htmlFor={id} className="field-label mb-0 shrink-0 font-medium text-xs">
+          Filter Alamat:
         </label>
         <input
           id={id}
           type="text"
-          className="field min-w-0 flex-1"
-          placeholder="0x… (default: dompet terhubung)"
+          className="field min-w-0 flex-1 py-2 px-3 text-xs font-mono"
+          placeholder="Cari alamat dompet mana pun (0x...)"
           value={value}
           onChange={(e) => onChange(e.target.value)}
           autoComplete="off"
@@ -51,27 +43,25 @@ export default function AddressFilter({
           onClick={() => onChange("")}
           disabled={!filtered}
         >
-          Dompet saya
+          Dompet Terhubung
         </button>
       </div>
 
       <p className="text-muted text-[11px]" role="status">
         {invalid ? (
-          <span className="text-danger">
-            Format alamat tidak valid — gunakan 0x diikuti 40 karakter hex.
+          <span className="text-danger font-semibold">
+            Format alamat tidak valid — gunakan format 0x dengan 40 karakter hex.
           </span>
         ) : filtered ? (
           <>
-            Menampilkan data untuk <span className="font-mono">{truncateAddress(trimmed)}</span>{" "}
-            (bisa address siapa pun — tidak perlu sambungkan wallet-nya).
+            Menampilkan catatan untuk alamat <span className="font-mono font-semibold text-ink">{truncateAddress(trimmed)}</span> (Dapat mencari alamat publik siapa pun).
           </>
         ) : target ? (
           <>
-            Menampilkan data untuk dompet terhubung{" "}
-            <span className="font-mono">{truncateAddress(target)}</span>.
+            Menampilkan data untuk dompet terhubung: <span className="font-mono font-semibold text-ink">{truncateAddress(target)}</span>.
           </>
         ) : (
-          <>Sambungkan wallet — atau ketik alamat mana pun — untuk memuat data.</>
+          <>Sambungkan dompet atau ketik alamat di atas untuk melihat data transaksi.</>
         )}
       </p>
     </div>

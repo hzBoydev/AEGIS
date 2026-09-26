@@ -3,7 +3,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { useAccount } from "wagmi";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
-import { DebateStreamProvider, type NewSession } from "@/components/DebateStream";
+import {
+  DebateStreamProvider,
+  type NewSession,
+} from "@/components/DebateStream";
 import Hero from "@/components/Hero";
 import SendForm from "@/components/SendForm";
 import HowItWorks from "@/components/HowItWorks";
@@ -17,35 +20,39 @@ import { isValidAddress } from "@/lib/utils";
 
 const NAV = [
   { id: "kirim-token", label: "Kirim Token" },
-  { id: "sidang-live", label: "Sidang Live" },
-  { id: "arsip-sidang", label: "Arsip Sidang" },
-  { id: "tata-cara", label: "Tata Cara" },
-  { id: "riwayat", label: "Riwayat" },
+  { id: "sidang-live", label: "Verifikasi Live" },
+  { id: "arsip-sidang", label: "Arsip Verifikasi" },
+  { id: "tata-cara", label: "Cara Kerja" },
+  { id: "riwayat", label: "Riwayat Transaksi" },
 ] as const;
 
 function BrandMark() {
   return (
-    <svg width="18" height="22" viewBox="0 0 22 26" fill="none" aria-hidden>
+    <svg width="20" height="24" viewBox="0 0 22 26" fill="none" aria-hidden>
       <path
         d="M11 1L20 5V12C20 18 16 23 11 25C6 23 2 18 2 12V5L11 1Z"
         stroke="currentColor"
-        strokeWidth="1.5"
+        strokeWidth="1.75"
+        strokeLinejoin="round"
       />
-      <path d="M11 6V20M6 10H16" stroke="currentColor" strokeWidth="1" />
+      <path d="M11 6V20M6 10H16" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" />
     </svg>
   );
 }
 
 function DashboardIntro() {
   return (
-    <div className="pt-2" data-reveal>
-      <p className="eyebrow">Ruang kendali</p>
-      <h1 className="font-display mt-2 text-3xl leading-tight tracking-tight sm:text-4xl">
-        Perisai aktif
+    <div className="pt-2 pb-1" data-reveal>
+      <div className="flex items-center gap-2">
+        <span className="badge badge-safe">Sistem Terkoneksi</span>
+        <span className="text-muted text-xs">BSC Testnet</span>
+      </div>
+      <h1 className="font-display mt-3 text-3xl leading-tight tracking-tight sm:text-4xl text-ink">
+        Ruang Kendali Transaksi
       </h1>
-      <p className="text-muted mt-2 max-w-xl text-sm leading-relaxed">
-        Transfer ditahan di escrow, disidang AI Oracle, lalu hanya lolos bila aman — atau
-        diveto oleh satu suara manusia. Pilih bagianmu lewat menu di atas.
+      <p className="text-muted mt-2 max-w-2xl text-sm leading-relaxed">
+        Setiap transfer Anda dilindungi secara otomatis. Dana diamankan di brankas escrow,
+        diverifikasi oleh sistem keamanan berlapis, dan Anda memiliki kuasa penuh untuk membatalkan jika ada indikasi bahaya.
       </p>
     </div>
   );
@@ -57,16 +64,16 @@ function ConnectCard() {
       <div className="card-head">
         <div>
           <p className="eyebrow">Langkah 01</p>
-          <p className="font-display mt-1 text-xl text-ink">Kirim Token</p>
+          <p className="font-display mt-1 text-xl text-ink">Kirim Token Aman</p>
           <p className="text-muted mt-1 text-xs">
-            BNB Testnet — ditahan hingga diverifikasi aman
+            Sambungkan dompet Web3 untuk memulai pengiriman dengan proteksi escrow
           </p>
         </div>
-        <span className="badge badge-bronze">Escrow</span>
+        <span className="badge badge-bronze">Escrow Vault</span>
       </div>
       <div className="card-pad flex flex-col items-start gap-4">
         <p className="text-muted text-sm leading-relaxed">
-          Sambungkan wallet untuk mengirim transfer yang dijaga Aegis.
+          Hubungkan dompet Anda ke jaringan BSC Testnet untuk melakukan transfer terlindungi.
         </p>
         <ConnectButton />
       </div>
@@ -77,15 +84,11 @@ function ConnectCard() {
 export default function Home() {
   const { isConnected, address: walletAddress } = useAccount();
   const [modalOpen, setModalOpen] = useState(false);
-  // Dibuat ulang tiap transaksi baru → DebateStream me-reset sesi sidang aktif,
-  // supaya popup tidak sempat menampilkan riwayat sidang sebelumnya.
   const [newSession, setNewSession] = useState<NewSession>({ key: 0, at: 0 });
   const [activeSection, setActiveSection] = useState<string>(NAV[0].id);
 
-  // ── Multi-wallet: filter alamat bersama untuk arsip sidang & riwayat ────────
   const [filterAddress, setFilterAddress] = useState("");
   const query = filterAddress.trim();
-  // Query kosong → dompet terhubung. Query tidak valid → "" (filter menampilkan error).
   const activeAddress =
     query.length === 0
       ? walletAddress
@@ -153,11 +156,11 @@ export default function Home() {
                 <BrandMark />
               </span>
               <div>
-                <p className="font-display text-lg leading-none tracking-[0.22em] text-ink">
+                <p className="font-display text-lg leading-none tracking-[0.2em] font-bold text-ink">
                   AEGIS
                 </p>
-                <p className="text-muted mt-1.5 text-[11px] tracking-wide">
-                  AI Transfer Guardian
+                <p className="text-muted mt-1 text-[11px] tracking-wide">
+                  Smart Escrow & Security Guardian
                 </p>
               </div>
             </div>
@@ -179,7 +182,7 @@ export default function Home() {
               </div>
             </nav>
 
-            <div className="shrink-0">
+            <div className="shrink-0 flex items-center gap-2">
               <ConnectButton />
             </div>
           </div>
@@ -229,11 +232,19 @@ export default function Home() {
         </main>
 
         <footer className="site-footer">
-          <div className="shell flex flex-wrap items-center justify-between gap-3 py-6">
-            <p className="text-muted text-xs">© AEGIS — AI Transfer Guardian</p>
-            <p className="text-muted text-xs">
-              Escrow · Sidang multi-agen · Veto manusia — BSC Testnet
-            </p>
+          <div className="shell flex flex-wrap items-center justify-between gap-4 py-8">
+            <div>
+              <p className="font-display font-semibold text-sm text-ink">AEGIS — Smart Escrow Guardian</p>
+              <p className="text-muted text-xs mt-1">
+                Perlindungan transaksi kripto otomatis dengan verifikasi berlapis dan kendali penuh pengguna.
+              </p>
+            </div>
+            <div className="text-right">
+              <span className="badge badge-bronze">BSC Testnet Active</span>
+              <p className="text-muted text-[11px] mt-1.5">
+                © {new Date().getFullYear()} Aegis Security Protocol.
+              </p>
+            </div>
           </div>
         </footer>
       </div>

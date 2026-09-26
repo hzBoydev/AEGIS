@@ -6,9 +6,10 @@ import { parseEther } from "viem";
 import { CONTRACT_ADDRESS, AEGIS_VAULT_ABI } from "@/config/contract";
 
 interface SendFormProps {
-  /** Dipanggil sekali tiap transaksi baru terkirim (untuk membuka popup sidang). */
   onSubmitted?: () => void;
 }
+
+const PRESET_AMOUNTS = ["0.001", "0.01", "0.05", "0.1"];
 
 export default function SendForm({ onSubmitted }: SendFormProps) {
   const [recipient, setRecipient] = useState("");
@@ -44,26 +45,27 @@ export default function SendForm({ onSubmitted }: SendFormProps) {
       <div className="card-head">
         <div>
           <p className="eyebrow">Langkah 01</p>
-          <p className="font-display mt-1 text-xl text-ink">Kirim Token</p>
+          <p className="font-display mt-1 text-xl text-ink">Kirim Token Aman</p>
           <p className="text-muted mt-1 text-xs">
-            BNB Testnet — ditahan hingga diverifikasi aman
+            Dana masuk ke brankas penampung (Escrow) sebelum diverifikasi
           </p>
         </div>
-        <span className="badge badge-bronze">Escrow</span>
+        <span className="badge badge-bronze">Escrow Vault</span>
       </div>
 
       <form onSubmit={handleSubmit} className="card-pad flex flex-col gap-5">
         <div>
-          <label htmlFor="recipient" className="field-label">
-            Alamat penerima
+          <label htmlFor="recipient" className="field-label flex items-center justify-between">
+            <span>Alamat Dompet Penerima</span>
+            <span className="text-muted text-[11px] font-normal">Format: 0x... (BSC Testnet)</span>
           </label>
           <input
             id="recipient"
             type="text"
-            placeholder="0x..."
+            placeholder="Masukkan alamat dompet (0x...)"
             value={recipient}
             onChange={(e) => setRecipient(e.target.value)}
-            className="field"
+            className="field font-mono text-xs sm:text-sm"
             autoComplete="off"
             spellCheck={false}
             required
@@ -71,14 +73,30 @@ export default function SendForm({ onSubmitted }: SendFormProps) {
         </div>
 
         <div>
-          <label htmlFor="amount" className="field-label">
-            Jumlah (BNB)
-          </label>
+          <div className="flex items-center justify-between mb-2">
+            <label htmlFor="amount" className="field-label mb-0">
+              Jumlah Transfer (BNB)
+            </label>
+            <div className="flex items-center gap-1.5">
+              {PRESET_AMOUNTS.map((p) => (
+                <button
+                  key={p}
+                  type="button"
+                  onClick={() => setAmount(p)}
+                  className={`btn-ghost btn-sm py-0.5 px-2 text-[11px] rounded-md transition-all ${
+                    amount === p ? "border-[var(--bronze)] text-[var(--bronze)] font-semibold" : ""
+                  }`}
+                >
+                  {p}
+                </button>
+              ))}
+            </div>
+          </div>
           <input
             id="amount"
             type="text"
             inputMode="decimal"
-            placeholder="0.001"
+            placeholder="Contoh: 0.001"
             value={amount}
             onChange={(e) => setAmount(e.target.value)}
             className="field"
@@ -86,54 +104,57 @@ export default function SendForm({ onSubmitted }: SendFormProps) {
           />
         </div>
 
-        <div className="flex flex-col gap-3 pt-0.5">
+        <div className="flex flex-col gap-3 pt-1">
           <button type="submit" disabled={isPending || isConfirming} className="btn btn-bronze w-full">
             {isPending
-              ? "Menunggu konfirmasi wallet"
+              ? "Menunggu Konfirmasi di Wallet…"
               : isConfirming
-              ? "Memproses transaksi"
-              : "Kirim ke Escrow"}
+              ? "Memproses Transaksi di Jaringan…"
+              : "Kirim dengan Proteksi Aegis"}
           </button>
-          <p className="text-muted text-[11px] leading-relaxed">
-            Dana ditahan kontrak escrow dan hanya keluar setelah putusan oracle.
-          </p>
+          <div className="flex items-center justify-between text-muted text-[11px]">
+            <span>🛡️ Dana aman di escrow hingga diverifikasi</span>
+            <span>Jaringan: BSC Testnet</span>
+          </div>
         </div>
 
         {error && (
           <div className="alert alert-danger" role="alert">
-            <span aria-hidden>✕</span>
-            <span>
-              {error.message.split("\n")[0]}
-              <span className="mt-1 block text-[11px] opacity-80">
-                Kalau transaksi tidak terkirim, cek jaringan wallet (BSC Testnet) lalu
-                coba lagi.
-              </span>
-            </span>
+            <span aria-hidden className="text-base font-bold">✕</span>
+            <div>
+              <p className="font-semibold">{error.message.split("\n")[0]}</p>
+              <p className="mt-1 text-[11px] opacity-80">
+                Pastikan saldo BNB mencukupi dan jaringan dompet Anda berada di BSC Testnet.
+              </p>
+            </div>
           </div>
         )}
 
         {isConfirming && (
-          <div className="alert" role="status">
-            <span aria-hidden>⏳</span>
-            <span>
-              Menunggu transaksi dikonfirmasi jaringan BSC Testnet…
-            </span>
+          <div className="alert alert-safe" role="status">
+            <span aria-hidden className="pulse-bronze h-2 w-2 rounded-full bg-[var(--bronze)] shrink-0 mt-1" />
+            <div>
+              <p className="font-semibold">Menunggu konfirmasi blok di BSC Testnet…</p>
+              <p className="text-[11px] opacity-85">Transaksi Anda sedang dicatat di blockchain.</p>
+            </div>
           </div>
         )}
 
         {isConfirmed && (
           <div className="alert alert-safe" role="status">
-            <span aria-hidden>✓</span>
-            <span>
-              Escrow dibuat — dana ditahan kontrak. Sidang AI (Investigator →
-              Advocate → Judge) segera dimulai; hasilnya tampil di bagian{" "}
-              <strong>Sidang AI Live</strong> (biasanya 30–60 detik).
+            <span aria-hidden className="text-base font-bold">✓</span>
+            <div>
+              <p className="font-semibold">Transaksi Berhasil Dibuat!</p>
+              <p className="mt-0.5 text-xs opacity-90 leading-relaxed">
+                Dana kini berada di brankas escrow. Sistem verifikasi otomatis sedang berjalan.
+                Hasil dan perkembangan dapat dipantau di bagian <strong>Pemantauan Verifikasi Live</strong> di bawah.
+              </p>
               {hash && (
-                <span className="mt-1 block font-mono text-[11px] opacity-80">
-                  tx {hash.slice(0, 18)}…
-                </span>
+                <p className="mt-1.5 font-mono text-[11px] opacity-75">
+                  ID Transaksi: {hash.slice(0, 20)}…
+                </p>
               )}
-            </span>
+            </div>
           </div>
         )}
       </form>

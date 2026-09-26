@@ -13,12 +13,12 @@ import { formatDuration } from "@/lib/utils";
 
 export function LiveStatusBadge() {
   const { connected, finished, awaitingSession } = useDebateStream();
-  if (!connected) return <span className="badge">terputus</span>;
-  if (awaitingSession) return <span className="badge">menunggu</span>;
+  if (!connected) return <span className="badge badge-danger">Terputus</span>;
+  if (awaitingSession) return <span className="badge badge-bronze">Menunggu Analisis</span>;
   return finished ? (
-    <span className="badge badge-safe">selesai</span>
+    <span className="badge badge-safe">Verifikasi Selesai</span>
   ) : (
-    <span className="badge badge-bronze">live</span>
+    <span className="badge badge-bronze">Sedang Menganalisis</span>
   );
 }
 
@@ -33,28 +33,28 @@ export function DebateEventRow({
   active?: boolean;
   clampDetail?: boolean;
 }) {
-  const meta = PHASE_META[ev.phase];
+  const meta = PHASE_META[ev.phase] || { title: ev.phase, tint: "var(--text-primary)" };
   return (
     <div
       className={`py-3 ${isLast ? "" : "border-b border-dashed border-[var(--border)]"}`}
     >
-      <div className="flex gap-3">
-        <div className="flex w-16 shrink-0 flex-col pt-0.5">
+      <div className="flex gap-3 items-start">
+        <div className="flex w-24 shrink-0 flex-col pt-0.5">
           <span
-            className="w-full text-right text-[10px] tracking-wide uppercase"
+            className="w-full text-left text-[11px] font-semibold tracking-wide"
             style={{ color: meta.tint }}
           >
             {meta.title}
           </span>
         </div>
         <div className="min-w-0 flex-1">
-          <div className="flex items-start gap-2">
+          <div className="flex items-start gap-2.5">
             <span
-              className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${active ? "pulse" : ""}`}
+              className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${active ? "pulse-bronze" : ""}`}
               style={{ background: statusColor(ev.status) }}
             />
             <div className="min-w-0">
-              <p className="text-ink text-sm leading-snug">{ev.label}</p>
+              <p className="text-ink text-sm font-medium leading-snug">{ev.label}</p>
               {ev.detail && (
                 <p
                   className={`text-muted mt-1 text-xs leading-relaxed break-words ${
@@ -73,7 +73,6 @@ export function DebateEventRow({
 }
 
 interface LiveDebateProps {
-  /** true = tanpa shell kartu (dipakai di dalam popup). */
   bare?: boolean;
   onOpenPopup?: () => void;
 }
@@ -92,7 +91,6 @@ export default function LiveDebate({ bare = false, onOpenPopup }: LiveDebateProp
   } = useDebateStream();
   const listRef = useRef<HTMLDivElement>(null);
 
-  // ── Progress: durasi fase berjalan & total sidang ────────────────────────────
   const running = !finished && last?.status === "start";
   const [now, setNow] = useState(() => Date.now());
 
@@ -116,18 +114,24 @@ export default function LiveDebate({ bare = false, onOpenPopup }: LiveDebateProp
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
   }, [sessionEvents.length]);
 
+  const isEligible = finalEv?.data?.eligible === true;
   const finalNotice = finalEv ? (
     <div
-      className={`notice ${finalEv.data?.eligible === true ? "notice-safe" : "notice-danger"}`}
+      className={`notice ${isEligible ? "notice-safe" : "notice-danger"} justify-between flex-wrap gap-2`}
     >
-      <strong>{finalEv.label}</strong>
+      <div>
+        <p className="font-semibold text-sm">
+          {isEligible ? "✓ Transaksi Dinyatakan Aman" : "⚠️ Transaksi Memerlukan Perhatian"}
+        </p>
+        <p className="text-xs opacity-90 mt-0.5">{finalEv.label}</p>
+        {finalEv.detail && (
+          <p className="mt-1 text-xs leading-relaxed opacity-85">{finalEv.detail}</p>
+        )}
+      </div>
       {typeof finalEv.data?.confidence === "number" && (
-        <span className="ml-2 opacity-80">
-          {Math.round((finalEv.data.confidence as number) * 100)}% yakin
+        <span className="badge badge-safe self-center">
+          Keyakinan: {Math.round((finalEv.data.confidence as number) * 100)}%
         </span>
-      )}
-      {finalEv.detail && (
-        <p className="mt-1 text-xs leading-relaxed opacity-80">{finalEv.detail}</p>
       )}
     </div>
   ) : null;
@@ -138,20 +142,20 @@ export default function LiveDebate({ bare = false, onOpenPopup }: LiveDebateProp
         <p className="text-muted text-sm leading-relaxed">
           {connected
             ? awaitingSession
-              ? "Transaksi baru terkirim — menunggu oracle menangkap escrow lalu memulai sidang. Escrow → Bukti → Aturan akan muncul di sini."
-              : "Terhubung ke oracle. Sidang Investigator → Advocate → Judge akan muncul di sini begitu escrow diproses."
-            : sseError ?? `Menyambung ke ${API_BASE_URL}/api/stream…`}
+              ? "Transaksi baru terdeteksi — sistem sedang memuat data dan memulai analisis tahapan. Perkembangan akan muncul otomatis di sini."
+              : "Terhubung dengan sistem Aegis. Setiap transaksi baru akan otomatis dianalisis secara berlapis di sini."
+            : sseError ?? `Menghubungkan ke layanan verifikasi (${API_BASE_URL})…`}
         </p>
         {sseError && !connected && (
           <p className="text-danger mt-2 text-xs">
-            Pastikan backend berjalan: <code className="code-chip">cd backend && npm run dev</code>
+            Layanan backend belum aktif: jalankan <code className="code-chip">cd backend && npm run dev</code>
           </p>
         )}
       </div>
     ) : (
       <div
         ref={listRef}
-        className="scroll-thin flex max-h-80 flex-col overflow-y-auto px-5 py-1"
+        className="scroll-thin flex max-h-80 flex-col overflow-y-auto px-5 py-2"
       >
         {sessionEvents.map((ev, i) => (
           <DebateEventRow
@@ -162,19 +166,18 @@ export default function LiveDebate({ bare = false, onOpenPopup }: LiveDebateProp
           />
         ))}
         {!finished && sessionEvents.length > 0 && (
-          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 py-2 pl-16 text-[11px]">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2 pl-28 text-[11px] border-t border-dashed border-[var(--border)] mt-2">
             <span className="text-muted">
-              total berjalan {formatDuration(sessionElapsedSec)}
+              Waktu berjalan: {formatDuration(sessionElapsedSec)}
             </span>
             {running && last && (
               <>
-                <span className="pulse text-bronze">
-                  {PHASE_META[last.phase].title} sedang berjalan · {phaseElapsedSec} detik
+                <span className="text-bronze font-medium">
+                  {PHASE_META[last.phase]?.title ?? last.phase} sedang berlangsung · {phaseElapsedSec} dtk
                 </span>
                 {slowPhase && (
                   <span className="text-muted">
-                    model lokal sedang inference — sidang bisa makan 30–60 detik,
-                    tunggu sebentar
+                    (Sedang memvalidasi parameter on-chain…)
                   </span>
                 )}
               </>
@@ -185,27 +188,28 @@ export default function LiveDebate({ bare = false, onOpenPopup }: LiveDebateProp
     );
 
   const chips = (
-    <div className="card-foot flex flex-wrap gap-1.5">
+    <div className="card-foot flex flex-wrap gap-2 items-center">
+      <span className="text-muted text-[11px] font-semibold uppercase tracking-wider mr-1">Tahap:</span>
       {PHASE_ORDER.map((phase) => {
         const seen = sessionEvents.filter((e) => e.phase === phase);
         const hasFail = seen.some((e) => e.status === "fail");
         const hasOk = seen.some((e) => e.status === "ok" || e.status === "done");
-        const running = seen.some((e) => e.status === "start");
+        const isRunning = seen.some((e) => e.status === "start");
         const color = hasFail
           ? "var(--danger)"
-          : running
+          : isRunning
           ? "var(--bronze)"
           : hasOk
           ? "var(--safe)"
           : "var(--text-secondary)";
-        const border = hasOk || running || hasFail ? color : "var(--border)";
+        const border = hasOk || isRunning || hasFail ? color : "var(--border)";
         return (
           <span
             key={phase}
-            className={`chip ${running ? "pulse" : ""}`}
+            className={`chip ${isRunning ? "pulse-bronze" : ""}`}
             style={{ borderColor: border, color }}
           >
-            {PHASE_META[phase].title}
+            {PHASE_META[phase]?.title ?? phase}
           </span>
         );
       })}
@@ -227,22 +231,22 @@ export default function LiveDebate({ bare = false, onOpenPopup }: LiveDebateProp
       <div className="card-head">
         <div>
           <p className="eyebrow">Langkah 02</p>
-          <p className="font-display mt-1 text-xl text-ink">Sidang AI Live</p>
+          <p className="font-display mt-1 text-xl text-ink">Pemantauan Verifikasi Live</p>
           {currentId ? (
             <p className="text-muted mt-1 font-mono text-[11px]">
-              escrow {currentId.slice(0, 12)}…
+              ID Escrow: {currentId.slice(0, 16)}…
             </p>
           ) : (
-            <p className="text-muted mt-1 text-xs">Menunggu escrow masuk…</p>
+            <p className="text-muted mt-1 text-xs">Menunggu transaksi escrow masuk…</p>
           )}
         </div>
         <div className="flex items-center gap-2">
           {onOpenPopup && (
             <button type="button" className="btn btn-ghost btn-sm" onClick={onOpenPopup}>
-              Buka popup
+              Buka Layar Penuh
             </button>
           )}
-          {!finished && <span className="pulse h-1.5 w-1.5 rounded-full bg-[var(--bronze)]" />}
+          {!finished && <span className="pulse-bronze h-2 w-2 rounded-full bg-[var(--bronze)]" />}
           <LiveStatusBadge />
         </div>
       </div>

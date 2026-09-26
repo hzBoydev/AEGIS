@@ -34,20 +34,20 @@ export default function DebateModal({ open, onClose }: DebateModalProps) {
       onClick={onClose}
       role="dialog"
       aria-modal="true"
-      aria-label="Sidang AI Live"
+      aria-label="Pemantauan Verifikasi Live"
     >
       <div className="modal-panel" onClick={(e) => e.stopPropagation()}>
         <div className="card-head">
           <div>
-            <p className="eyebrow">Sidang berjalan</p>
-            <p className="font-display mt-1 text-xl text-ink">Sidang AI Live</p>
+            <p className="eyebrow">Sedang Berjalan</p>
+            <p className="font-display mt-1 text-xl text-ink">Pemantauan Verifikasi Live</p>
             {currentId ? (
               <p className="text-muted mt-1 font-mono text-[11px]">
-                escrow {currentId.slice(0, 12)}…
+                ID Escrow: {currentId.slice(0, 16)}…
               </p>
             ) : (
               <p className="text-muted mt-1 text-xs">
-                Menunggu oracle memproses escrow kamu…
+                Menunggu sistem memproses transaksi escrow Anda…
               </p>
             )}
           </div>

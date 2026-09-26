@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState, useEffect } from "react";
 import { useAccount } from "wagmi";
 import { DebateEventRow } from "@/components/LiveDebate";
 import type { StreamEvent } from "@/components/DebateStream";
@@ -39,9 +39,11 @@ function summarize(s: DebateSession) {
   const tone = !finalEv ? "bronze" : finalEv.data?.eligible === true ? "safe" : "danger";
   const label = !finalEv
     ? hasVote
-      ? "menunggu veto"
-      : "berlangsung"
-    : finalEv.label;
+      ? "Menunggu Tinjauan Manual"
+      : "Sedang Berlangsung"
+    : finalEv.data?.eligible === true
+    ? "Verifikasi Aman"
+    : "Dibatalkan / Berisiko";
   const phases = new Set(s.events.map((e) => e.phase));
   return { finalEv, confidence, tone, label, stepCount: s.events.length, phaseCount: phases.size };
 }
@@ -64,7 +66,6 @@ export default function DebateHistory({ address: addressOverride }: { address?: 
   const { address: walletAddress } = useAccount();
   const address = addressOverride ?? walletAddress;
   const isFiltered = Boolean(addressOverride && addressOverride !== walletAddress);
-  // Payload diikat ke address — wallet berganti ⇒ data lama dianggap basi.
   const [payload, setPayload] = useState<DebatePayload | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
@@ -88,7 +89,6 @@ export default function DebateHistory({ address: addressOverride }: { address?: 
         );
         if (!alive) return;
         if (json.success) {
-          // Sembunyikan arsip red-team dari UI.
           const rows: DebateSession[] = (json.data ?? []).filter(
             (s: DebateSession) => !s.escrowId.startsWith("redteam-")
           );
@@ -125,15 +125,15 @@ export default function DebateHistory({ address: addressOverride }: { address?: 
     <section className="card overflow-hidden">
       <div className="card-head">
         <div>
-          <p className="eyebrow">Arsip otomatis</p>
-          <p className="font-display mt-1 text-xl text-ink">Riwayat Sidang AI</p>
+          <p className="eyebrow">Catatan Lengkap</p>
+          <p className="font-display mt-1 text-xl text-ink">Arsip Verifikasi Transaksi</p>
           <p className="text-muted mt-1 text-xs">
             {isFiltered
-              ? `Rekaman sesi Investigator → Advocate → Judge untuk alamat ${truncateAddress(address ?? "")}.`
-              : "Rekaman sesi Investigator → Advocate → Judge untuk escrow dompetmu."}
+              ? `Rekaman tahapan verifikasi untuk alamat ${truncateAddress(address ?? "")}.`
+              : "Rekaman tahapan verifikasi untuk transaksi dari dompet Anda."}
           </p>
         </div>
-        {!loading && !error && total > 0 && <span className="badge">{total} sesi</span>}
+        {!loading && !error && total > 0 && <span className="badge">{total} Sesi</span>}
       </div>
 
       <div className="card-pad flex flex-col gap-3">
@@ -146,17 +146,16 @@ export default function DebateHistory({ address: addressOverride }: { address?: 
 
         {!address ? (
           <div className="empty-note">
-            Sambungkan wallet — atau cari alamat mana pun — untuk melihat arsip sidang.
+            Sambungkan dompet Anda — atau cari alamat tertentu di atas — untuk melihat arsip verifikasi.
           </div>
         ) : loading && sessions.length === 0 ? (
-          <div className="text-muted flex items-center gap-2 text-sm">
-            <span className="pulse h-1.5 w-1.5 rounded-full bg-[var(--bronze)]" />
-            Memuat arsip sidang
+          <div className="text-muted flex items-center gap-2 text-sm py-2">
+            <span className="pulse-bronze h-2 w-2 rounded-full bg-[var(--bronze)]" />
+            Memuat arsip verifikasi…
           </div>
         ) : sessions.length === 0 && !error ? (
           <div className="empty-note">
-            Belum ada arsip sidang untuk alamat ini. Setiap escrow yang disidang AI
-            akan otomatis direkam di sini.
+            Belum ada arsip verifikasi untuk alamat ini. Kirim token pertama Anda untuk memulai.
           </div>
         ) : (
           sessions.map((s) => {
@@ -178,17 +177,21 @@ export default function DebateHistory({ address: addressOverride }: { address?: 
                   aria-expanded={expanded}
                 >
                   <div className="min-w-0">
-                    <p className="text-ink truncate text-sm font-medium">
+                    <p className="text-ink truncate text-sm font-semibold flex items-center gap-2">
+                      <span
+                        className="h-2 w-2 rounded-full shrink-0"
+                        style={{ background: toneColor }}
+                      />
                       {info.label}
                     </p>
                     <p className="text-muted mt-1 truncate font-mono text-[11px]">
-                      {formatMs(s.updatedAt)} · escrow {s.escrowId.slice(0, 14)}…
+                      {formatMs(s.updatedAt)} · Escrow {s.escrowId.slice(0, 16)}…
                     </p>
                   </div>
                   <div className="flex shrink-0 items-center gap-3">
                     {info.confidence !== null && (
-                      <span className="text-muted text-xs">
-                        {Math.round(info.confidence * 100)}% yakin
+                      <span className="text-muted text-xs font-medium">
+                        {Math.round(info.confidence * 100)}% Yakin
                       </span>
                     )}
                     <span
@@ -199,10 +202,10 @@ export default function DebateHistory({ address: addressOverride }: { address?: 
                         background: `color-mix(in srgb, ${toneColor} 12%, var(--surface-glass))`,
                       }}
                     >
-                      {info.phaseCount} fase · {info.stepCount} langkah
+                      {info.phaseCount} Tahap · {info.stepCount} Langkah
                     </span>
-                    <span className="text-muted text-xs" aria-hidden>
-                      {expanded ? "▾" : "▸"}
+                    <span className="text-muted text-xs font-bold" aria-hidden>
+                      {expanded ? "▴" : "▾"}
                     </span>
                   </div>
                 </button>
@@ -231,10 +234,10 @@ export default function DebateHistory({ address: addressOverride }: { address?: 
               className="btn btn-ghost btn-sm"
               onClick={() => setVisibleCount((c) => c + PAGE_SIZE)}
             >
-              Muat lebih banyak
+              Muat Lebih Banyak
             </button>
             <p className="text-muted text-[11px]">
-              Menampilkan {sessions.length} dari {total}
+              Menampilkan {sessions.length} dari {total} sesi
             </p>
           </div>
         )}

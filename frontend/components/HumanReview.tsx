@@ -33,12 +33,11 @@ interface VoteEnvelope {
 async function fetchPending(): Promise<PendingHuman[]> {
   const json = await fetchJson<PendingEnvelope>("/api/human/pending");
   if (!json.success) {
-    throw new Error(json.error ?? "Antrean review tidak bisa dimuat.");
+    throw new Error(json.error ?? "Antrean tinjauan tidak dapat dimuat.");
   }
   return dedupeByEscrow(json.data ?? []);
 }
 
-/** 1 escrow = 1 kartu vote (defensive — backend sudah UNIQUE). */
 function dedupeByEscrow(rows: PendingHuman[]): PendingHuman[] {
   const seen = new Set<string>();
   const out: PendingHuman[] = [];
@@ -104,11 +103,11 @@ export default function HumanReview() {
         body: JSON.stringify({ escrowId, approve }),
       });
       if (!json.success || !json.data) {
-        setError(json.error ?? "Vote gagal dikirim ke backend.");
+        setError(json.error ?? "Keputusan gagal dikirim ke backend.");
         return;
       }
       setOkMsg(
-        `${approve ? "Diteruskan" : "Dikembalikan"} — tx ${String(json.data.txHash).slice(0, 18)}…`
+        `${approve ? "Transfer disetujui & diteruskan" : "Transfer dibatalkan & dana dikembalikan"} — tx ${String(json.data.txHash).slice(0, 18)}…`
       );
       await refresh();
     } catch (err) {
@@ -122,40 +121,40 @@ export default function HumanReview() {
     <section className="card overflow-hidden">
       <div className="card-head">
         <div>
-          <p className="eyebrow">Human-in-the-loop</p>
-          <p className="font-display mt-1 text-xl text-ink">Veto Manusia</p>
+          <p className="eyebrow">Kendali Pengguna</p>
+          <p className="font-display mt-1 text-xl text-ink">Tinjauan Manual (Veto)</p>
           <p className="text-muted mt-1 text-xs leading-relaxed">
-            AI menahan dana — 1 suara manusia menentukan final on-chain.
+            Transaksi yang membutuhkan persetujuan Anda sebelum dieksekusi on-chain
           </p>
         </div>
         {!loading && items.length > 0 && (
-          <span className="badge badge-bronze">{items.length} antre</span>
+          <span className="badge badge-bronze">{items.length} Menunggu Keputusan</span>
         )}
       </div>
 
       <div className="card-pad">
         {okMsg && (
           <div className="alert alert-safe mb-4" role="status">
-            <span aria-hidden>✓</span>
+            <span aria-hidden className="font-bold">✓</span>
             <span>{okMsg}</span>
           </div>
         )}
         {error && (
           <div className="alert alert-danger mb-4" role="alert">
-            <span aria-hidden>✕</span>
+            <span aria-hidden className="font-bold">✕</span>
             <span>{error}</span>
           </div>
         )}
 
         {loading && items.length === 0 ? (
-          <div className="text-muted flex items-center gap-2 text-sm">
-            <span className="pulse h-1.5 w-1.5 rounded-full bg-[var(--bronze)]" />
-            Memuat antrean review manusia
+          <div className="text-muted flex items-center gap-2 text-sm py-2">
+            <span className="pulse-bronze h-2 w-2 rounded-full bg-[var(--bronze)]" />
+            Memuat antrean tinjauan manual…
           </div>
         ) : items.length === 0 ? (
           <div className="empty-note">
-            Tidak ada escrow yang menunggu veto manusia. Hold muncul saat confidence AI
-            di zona abu-abu atau sidang berbalik lean.
+            <p className="font-semibold text-ink mb-1">Semua Bersih & Aman</p>
+            Tidak ada transaksi yang tertahan. Jika sistem mendeteksi ketidakwajaran atau tingkat keyakinan berada di zona abu-abu, transaksi akan muncul di sini untuk Anda konfirmasi.
           </div>
         ) : (
           <div className="flex flex-col gap-4">
@@ -166,37 +165,42 @@ export default function HumanReview() {
               return (
                 <article key={p.id} className="pending-card">
                   <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-                    <p className="font-display text-base text-ink">{p.amount} BNB</p>
-                    <span className="text-bronze text-xs">
-                      {Math.round(p.confidence * 100)}% conf · {p.risk_level ?? "—"}
+                    <p className="font-display text-lg font-bold text-ink">{p.amount} BNB</p>
+                    <span className="badge badge-bronze text-[11px]">
+                      Tingkat Keyakinan: {Math.round(p.confidence * 100)}%
                     </span>
                   </div>
 
-                  <p className="text-muted mt-1 text-xs">
-                    ke {truncateAddress(p.recipient)} · escrow{" "}
-                    <code className="text-[10px]">{p.escrow_id.slice(0, 14)}…</code>
+                  <p className="text-muted mt-1.5 text-xs">
+                    Tujuan: <span className="font-mono text-ink font-medium">{truncateAddress(p.recipient)}</span>
                     {p.created_at && <> · {formatTimestamp(p.created_at)}</>}
                   </p>
 
-                  <div className="mt-3.5 flex flex-wrap items-center gap-2">
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
                     <span className={aiRec ? "tag tag-safe" : "tag tag-danger"}>
-                      Rekomendasi AI · {aiRec ? "RELEASE" : "REJECT"}
+                      Rekomendasi Sistem: {aiRec ? "DISARANKAN LANJUT" : "DISARANKAN BATAL"}
                     </span>
+                    {p.risk_level && (
+                      <span className="tag">Level Risiko: {p.risk_level}</span>
+                    )}
                   </div>
+
                   {p.human_reason && (
-                    <p className="text-muted mt-2 text-xs leading-relaxed">{p.human_reason}</p>
+                    <p className="text-muted mt-2 text-xs leading-relaxed bg-[var(--surface)] p-2 rounded-md border border-[var(--border)]">
+                      ℹ️ {p.human_reason}
+                    </p>
                   )}
 
                   <p className="text-ink mt-3 text-sm leading-relaxed">{p.reasoning}</p>
 
-                  <div className="mt-4 flex gap-2">
+                  <div className="mt-4 flex gap-2.5 pt-1">
                     <button
                       type="button"
                       disabled={busy}
                       onClick={() => vote(p.escrow_id, true)}
                       className="btn btn-safe flex-1"
                     >
-                      {busy ? "Memproses…" : "Setujui (release)"}
+                      {busy ? "Memproses…" : "✓ Setujui (Lanjutkan)"}
                     </button>
                     <button
                       type="button"
@@ -204,7 +208,7 @@ export default function HumanReview() {
                       onClick={() => vote(p.escrow_id, false)}
                       className="btn btn-danger flex-1"
                     >
-                      {busy ? "Memproses…" : "Tolak (revert)"}
+                      {busy ? "Memproses…" : "✕ Tolak (Kembalikan Dana)"}
                     </button>
                   </div>
                 </article>
