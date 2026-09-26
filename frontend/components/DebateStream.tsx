@@ -63,14 +63,60 @@ interface DebateContextValue {
   finished: boolean;
   finalEv: StreamEvent | undefined;
   last: StreamEvent | undefined;
+  /** true = sesi baru sudah dimulai tapi belum ada satu pun event masuk. */
+  awaitingSession: boolean;
+}
+
+/**
+ * Penanda sesi baru, dibuat di event handler transaksi (bukan saat render).
+ * - key : penanda perubahan; naik tiap transaksi baru.
+ * - at  : waktu kirim (ms) — batas bawah ts event yang boleh tampil.
+ */
+export interface NewSession {
+  key: number;
+  at: number;
+}
+
+/**
+ * Batas sesi. Dipasang saat transaksi baru dikirim supaya riwayat sidang lama
+ * tidak sempat tampil (sekalipun sepersekian detik) di popup / kartu live.
+ * - sinceTs : event backend dengan ts <= ini dianggap milik sesi sebelumnya.
+ * - staleId : escrow yang sedang aktif saat reset — event barunya yang datang
+ *             belakangan tetap dibuang (escrow lama bisa masih berjalan).
+ */
+interface SessionEpoch {
+  sinceTs: number;
+  staleId: string | null;
 }
 
 const DebateContext = createContext<DebateContextValue | null>(null);
 
-export function DebateStreamProvider({ children }: { children: ReactNode }) {
+export function DebateStreamProvider({
+  children,
+  newSession,
+}: {
+  children: ReactNode;
+  /** Dinaikkan tiap transaksi baru dikirim → sesi sidang di-reset. */
+  newSession?: NewSession;
+}) {
   const [events, setEvents] = useState<StreamEvent[]>([]);
   const [connected, setConnected] = useState(false);
   const [sseError, setSseError] = useState<string | null>(null);
+  const [epoch, setEpoch] = useState<SessionEpoch | null>(null);
+  const [seenSessionKey, setSeenSessionKey] = useState(newSession?.key ?? 0);
+
+  // Reset di fase render: React langsung me-render ulang sebelum commit, jadi
+  // tidak ada satu frame pun yang sempat menampilkan riwayat sesi lama.
+  // Pakai ts event backend bila ada (jam backend → bebas selisih jam frontend);
+  // "at" hanya dipakai saat buffer masih kosong.
+  if (newSession && newSession.key !== seenSessionKey) {
+    const lastEv = events[events.length - 1];
+    setSeenSessionKey(newSession.key);
+    setEpoch({
+      sinceTs: lastEv ? lastEv.ts : newSession.at,
+      staleId: lastEv?.escrowId ?? null,
+    });
+  }
 
   useEffect(() => {
     // EventSource hanya di browser (komponen ini "use client").
@@ -105,19 +151,23 @@ export function DebateStreamProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo<DebateContextValue>(() => {
-    // Sesi aktif = semua event ber-escrowId sama dengan event terakhir.
-    const last = events[events.length - 1];
+    // Sesi aktif = event sesudah batas reset (bila ada) dan bukan escrow lama.
+    const active = epoch
+      ? events.filter((e) => e.ts > epoch.sinceTs && e.escrowId !== epoch.staleId)
+      : events;
+    // Sesi = semua event ber-escrowId sama dengan event terakhir.
+    const last = active[active.length - 1];
     const currentId = last?.escrowId ?? null;
     const sessionEvents = currentId
-      ? events.filter((e) => e.escrowId === currentId || !e.escrowId)
-      : events;
+      ? active.filter((e) => e.escrowId === currentId || !e.escrowId)
+      : active;
     const finished = sessionEvents.some((e) => e.phase === "final" && e.status === "done");
     const finalEv = [...sessionEvents]
       .reverse()
       .find((e) => e.phase === "final" && e.status === "done");
 
     return {
-      events,
+      events: active,
       connected,
       sseError,
       sessionEvents,
@@ -125,8 +175,9 @@ export function DebateStreamProvider({ children }: { children: ReactNode }) {
       finished,
       finalEv,
       last,
+      awaitingSession: epoch !== null && active.length === 0,
     };
-  }, [events, connected, sseError]);
+  }, [events, connected, sseError, epoch]);
 
   return <DebateContext.Provider value={value}>{children}</DebateContext.Provider>;
 }

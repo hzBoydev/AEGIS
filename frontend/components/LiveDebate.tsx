@@ -12,8 +12,9 @@ import { API_BASE_URL } from "@/lib/api";
 import { formatDuration } from "@/lib/utils";
 
 export function LiveStatusBadge() {
-  const { connected, finished } = useDebateStream();
+  const { connected, finished, awaitingSession } = useDebateStream();
   if (!connected) return <span className="badge">terputus</span>;
+  if (awaitingSession) return <span className="badge">menunggu</span>;
   return finished ? (
     <span className="badge badge-safe">selesai</span>
   ) : (
@@ -87,6 +88,7 @@ export default function LiveDebate({ bare = false, onOpenPopup }: LiveDebateProp
     finalEv,
     last,
     events,
+    awaitingSession,
   } = useDebateStream();
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -135,7 +137,9 @@ export default function LiveDebate({ bare = false, onOpenPopup }: LiveDebateProp
       <div className="card-pad">
         <p className="text-muted text-sm leading-relaxed">
           {connected
-            ? "Terhubung ke oracle. Sidang Investigator → Advocate → Judge akan muncul di sini begitu escrow diproses."
+            ? awaitingSession
+              ? "Transaksi baru terkirim — menunggu oracle menangkap escrow lalu memulai sidang. Escrow → Bukti → Aturan akan muncul di sini."
+              : "Terhubung ke oracle. Sidang Investigator → Advocate → Judge akan muncul di sini begitu escrow diproses."
             : sseError ?? `Menyambung ke ${API_BASE_URL}/api/stream…`}
         </p>
         {sseError && !connected && (

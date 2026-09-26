@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useAccount } from "wagmi";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
-import { DebateStreamProvider } from "@/components/DebateStream";
+import { DebateStreamProvider, type NewSession } from "@/components/DebateStream";
 import Hero from "@/components/Hero";
 import SendForm from "@/components/SendForm";
 import HowItWorks from "@/components/HowItWorks";
@@ -77,6 +77,9 @@ function ConnectCard() {
 export default function Home() {
   const { isConnected, address: walletAddress } = useAccount();
   const [modalOpen, setModalOpen] = useState(false);
+  // Dibuat ulang tiap transaksi baru → DebateStream me-reset sesi sidang aktif,
+  // supaya popup tidak sempat menampilkan riwayat sidang sebelumnya.
+  const [newSession, setNewSession] = useState<NewSession>({ key: 0, at: 0 });
   const [activeSection, setActiveSection] = useState<string>(NAV[0].id);
 
   // ── Multi-wallet: filter alamat bersama untuk arsip sidang & riwayat ────────
@@ -92,6 +95,11 @@ export default function Home() {
 
   const openModal = useCallback(() => setModalOpen(true), []);
   const closeModal = useCallback(() => setModalOpen(false), []);
+  const handleSubmitted = useCallback(() => {
+    const at = Date.now();
+    setNewSession((s) => ({ key: s.key + 1, at }));
+    setModalOpen(true);
+  }, []);
 
   useEffect(() => {
     const observer = new IntersectionObserver(
@@ -136,7 +144,7 @@ export default function Home() {
   }, [isConnected]);
 
   return (
-    <DebateStreamProvider>
+    <DebateStreamProvider newSession={newSession}>
       <div className="flex min-h-screen flex-col">
         <header className="site-header">
           <div className="shell flex flex-wrap items-center justify-between gap-x-4 gap-y-2 py-3 md:h-16 md:flex-nowrap md:py-0">
@@ -183,7 +191,7 @@ export default function Home() {
           <section id="kirim-token" className="section-block" data-reveal>
             <div className="grid items-start gap-6 lg:grid-cols-12">
               <div className="min-w-0 lg:col-span-7">
-                {isConnected ? <SendForm onSubmitted={openModal} /> : <ConnectCard />}
+                {isConnected ? <SendForm onSubmitted={handleSubmitted} /> : <ConnectCard />}
               </div>
               <div className="min-w-0 lg:col-span-5">
                 <HumanReview />
