@@ -1,4 +1,5 @@
 import { config } from "./config.js";
+import { logger } from "./logger.js";
 
 // ── DEMO/TESTING SIMULATION ────────────────────────────────────────────────────
 /**
@@ -12,8 +13,8 @@ import { config } from "./config.js";
  * end-to-end during a live demo, without needing to find/use a real
  * known-malicious mainnet address (which would be risky and unreliable).
  *
- * In production: set GOPLUS_SIMULATE=false (atau hapus blok ini) — GoPlus
- * akan query database aslinya secara eksklusif.
+ * Simulasi MATI secara default (GOPLUS_SIMULATE default false). Aktifkan
+ * eksplisit dengan GOPLUS_SIMULATE=true untuk demo/pitch.
  *
  * Menambah address demo TANPA edit kode:
  *   GOPLUS_SIMULATE=true
@@ -35,12 +36,9 @@ function buildSimulatedMaliciousSet(): Set<string> {
     DEFAULT_DEMO_MALICIOUS_ADDRESSES.map((a) => a.toLowerCase())
   );
 
-  const fromEnv = config.GOPLUS_SIMULATED_ADDRESSES.split(",");
-  for (const raw of fromEnv) {
-    const addr = raw.trim();
-    if (!addr) continue;
+  for (const addr of config.GOPLUS_SIMULATED_ADDRESSES) {
     if (!ADDRESS_RE.test(addr)) {
-      console.warn(
+      logger.warn(
         `[GoPlus] ⚠️  GOPLUS_SIMULATED_ADDRESSES diabaikan (bukan address valid): ${addr}`
       );
       continue;
@@ -173,7 +171,7 @@ export async function checkAddressSecurity(
   // ── Check demo simulation first (see note above) ──────────────────────────
   const simulated = checkSimulatedMalicious(address);
   if (simulated) {
-    console.log(`[GoPlus] ⚠️  DEMO SIMULATION triggered for ${address} (not a real GoPlus lookup)`);
+    logger.log(`[GoPlus] ⚠️  DEMO SIMULATION triggered for ${address} (not a real GoPlus lookup)`);
     return simulated;
   }
 
@@ -206,7 +204,7 @@ export async function checkAddressSecurity(
 
     // ── HTTP error ────────────────────────────────────────────────────────────
     if (!response.ok) {
-      console.warn(
+      logger.warn(
         `[GoPlus] HTTP ${response.status} ${response.statusText} for ${address}`
       );
       return unavailable();
@@ -217,13 +215,13 @@ export async function checkAddressSecurity(
     try {
       data = (await response.json()) as GoPlusResponse;
     } catch {
-      console.warn(`[GoPlus] Malformed JSON response for ${address}`);
+      logger.warn(`[GoPlus] Malformed JSON response for ${address}`);
       return unavailable();
     }
 
     // ── API-level error ───────────────────────────────────────────────────────
     if (data.code !== 1) {
-      console.warn(
+      logger.warn(
         `[GoPlus] API error code=${data.code} message="${data.message}" for ${address}`
       );
       return unavailable();
@@ -231,7 +229,7 @@ export async function checkAddressSecurity(
 
     // ── Missing result ────────────────────────────────────────────────────────
     if (!data.result) {
-      console.warn(`[GoPlus] Missing result field for ${address}`);
+      logger.warn(`[GoPlus] Missing result field for ${address}`);
       return unavailable();
     }
 
@@ -272,9 +270,9 @@ export async function checkAddressSecurity(
     const isTimeout = typeof err === "string" && err.includes("timeout");
 
     if (isAbort || isTimeout) {
-      console.warn(`[GoPlus] Timeout after ${config.GOPLUS_TIMEOUT_MS}ms for ${address}`);
+      logger.warn(`[GoPlus] Timeout after ${config.GOPLUS_TIMEOUT_MS}ms for ${address}`);
     } else {
-      console.warn(`[GoPlus] Network error for ${address}:`, err);
+      logger.warn(`[GoPlus] Network error for ${address}:`, err);
     }
 
     return unavailable();

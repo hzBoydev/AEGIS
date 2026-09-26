@@ -87,14 +87,18 @@ export default function Home() {
   const [newSession, setNewSession] = useState<NewSession>({ key: 0, at: 0 });
   const [activeSection, setActiveSection] = useState<string>(NAV[0].id);
 
-  const [filterAddress, setFilterAddress] = useState("");
-  const query = filterAddress.trim();
-  const activeAddress =
-    query.length === 0
-      ? walletAddress
-      : isValidAddress(query)
-      ? query
-      : "";
+  const [filterArsip, setFilterArsip] = useState("");
+  const [filterRiwayat, setFilterRiwayat] = useState("");
+
+  // Filter arsip sidang dan riwayat escrow disimpan terpisah — kalau berbagi
+  // satu state, mengetik di satu bagian ikut mengubah bagian lainnya.
+  const resolveAddress = (raw: string): string | undefined => {
+    const query = raw.trim();
+    if (query.length === 0) return walletAddress;
+    return isValidAddress(query) ? query : "";
+  };
+  const arsipAddress = resolveAddress(filterArsip);
+  const riwayatAddress = resolveAddress(filterRiwayat);
 
   const openModal = useCallback(() => setModalOpen(true), []);
   const closeModal = useCallback(() => setModalOpen(false), []);
@@ -174,6 +178,7 @@ export default function Home() {
                   <a
                     key={item.id}
                     href={`#${item.id}`}
+                    aria-current={activeSection === item.id ? "true" : undefined}
                     className={`nav-link ${activeSection === item.id ? "is-active" : ""}`}
                   >
                     {item.label}
@@ -209,11 +214,11 @@ export default function Home() {
           <section id="arsip-sidang" className="section-block" data-reveal>
             <AddressFilter
               id="filter-arsip"
-              value={filterAddress}
-              onChange={setFilterAddress}
+              value={filterArsip}
+              onChange={setFilterArsip}
               walletAddress={walletAddress}
             />
-            <DebateHistory address={activeAddress} />
+            <DebateHistory address={arsipAddress} />
           </section>
 
           <section id="tata-cara" className="section-block" data-reveal>
@@ -223,11 +228,11 @@ export default function Home() {
           <section id="riwayat" className="section-block" data-reveal>
             <AddressFilter
               id="filter-riwayat"
-              value={filterAddress}
-              onChange={setFilterAddress}
+              value={filterRiwayat}
+              onChange={setFilterRiwayat}
               walletAddress={walletAddress}
             />
-            <EscrowHistory address={activeAddress} />
+            <EscrowHistory address={riwayatAddress} />
           </section>
         </main>
 

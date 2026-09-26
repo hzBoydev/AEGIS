@@ -1,9 +1,11 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useCallback, useRef, useState } from "react";
 import { useAccount } from "wagmi";
 import { formatTimestamp, truncateAddress } from "@/lib/utils";
 import { fetchJson, shortApiMessage } from "@/lib/api";
+import { useVisibleInterval } from "@/lib/hooks";
+import { escrowsEnvelopeSchema } from "@/lib/schemas";
 
 interface Decision {
   id: number;
@@ -38,42 +40,40 @@ interface EscrowApiEnvelope {
 
 function useEscrowHistory(limit: number, address: string | undefined) {
   const [payload, setPayload] = useState<HistoryPayload | null>(null);
+  const inFlight = useRef(false);
 
-  useEffect(() => {
+  const load = useCallback(async () => {
     if (!address) return;
+    if (inFlight.current) return;
+    inFlight.current = true;
     const addr = address;
-    let alive = true;
-
-    async function fetchData() {
-      try {
-        const json = await fetchJson<EscrowApiEnvelope>(
-          `/api/escrows?limit=${limit}&address=${encodeURIComponent(addr)}`
-        );
-        if (!alive) return;
-        setPayload(
-          json.success
-            ? {
-                addr,
-                rows: json.data ?? [],
-                total:
-                  typeof json.total === "number"
-                    ? json.total
-                    : (json.data ?? []).length,
-              }
-            : { addr, rows: [], total: 0, error: json.error ?? "Permintaan ditolak backend." }
-        );
-      } catch (err) {
-        if (!alive) return;
-        setPayload({ addr, rows: [], total: 0, error: shortApiMessage(err) });
-      }
+    try {
+      const json = await fetchJson<EscrowApiEnvelope>(
+        `/api/escrows?limit=${limit}&address=${encodeURIComponent(addr)}`,
+        undefined,
+        escrowsEnvelopeSchema
+      );
+      setPayload(
+        json.success
+          ? {
+              addr,
+              rows: json.data ?? [],
+              total:
+                typeof json.total === "number" ? json.total : (json.data ?? []).length,
+            }
+          : { addr, rows: [], total: 0, error: json.error ?? "Permintaan ditolak backend." }
+      );
+    } catch (err) {
+      setPayload({ addr, rows: [], total: 0, error: shortApiMessage(err) });
+    } finally {
+      inFlight.current = false;
     }
-    void fetchData();
-    const interval = setInterval(fetchData, 5000);
-    return () => {
-      alive = false;
-      clearInterval(interval);
-    };
   }, [limit, address]);
+
+  // Polling berhenti otomatis saat tab tidak terlihat (lihat lib/hooks.ts).
+  useVisibleInterval(() => {
+    void load();
+  }, 5000, Boolean(address));
 
   const fresh = payload && address && payload.addr === address ? payload : null;
   return {

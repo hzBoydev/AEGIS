@@ -1,6 +1,26 @@
 import Database from "better-sqlite3";
+import { logger } from "./logger.js";
+import { config } from "./config.js";
 
-const db = new Database("aegis.db");
+// Satu koneksi tunggal untuk seluruh proses (lihat getDb()). Dua koneksi
+// terpisah ke file yang sama = risiko SQLITE_BUSY saat write concurrent.
+const db = new Database(config.DB_PATH);
+
+// Mode yang aman untuk concurrent read (poller) + write (saveDecision).
+db.pragma("journal_mode = WAL");
+db.pragma("busy_timeout = 5000");
+db.pragma("synchronous = NORMAL");
+
+/** Koneksi SQLite tunggal — dipakai juga oleh agentMemory.ts. */
+export function getDb(): Database.Database {
+  return db;
+}
+
+/** Tutup koneksi dengan rapi saat shutdown. */
+export function closeDb(): void {
+  db.close();
+}
+
 
 // ── Schema ────────────────────────────────────────────────────────────────────
 db.exec(`
@@ -121,7 +141,7 @@ export function saveDecision(record: DecisionRecord): void {
     | { id?: number }
     | undefined;
   if (existing) {
-    console.warn(
+    logger.warn(
       `[DB] skip saveDecision — escrow_id sudah ada: ${record.escrowId.slice(0, 14)}…`
     );
     return;

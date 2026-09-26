@@ -1,4 +1,5 @@
 import { config, publicClient } from "./config.js";
+import { logger } from "./logger.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 export interface OnChainIntel {
@@ -305,7 +306,7 @@ export async function getOnChainIntel(address: string): Promise<OnChainIntel> {
     };
   } catch (err) {
     clearTimeout(timer);
-    console.warn(`[BscScan] Error fetching intel for ${address}:`, err);
+    logger.warn(`[BscScan] Error fetching intel for ${address}:`, err);
     return {
       txCount: null,
       walletAgeInDays: null,

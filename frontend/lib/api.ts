@@ -1,3 +1,5 @@
+import type { z } from "zod";
+
 /**
  * Base URL backend (Express + SSE).
  * Diatur lewat NEXT_PUBLIC_API_BASE_URL di .env.local / environment build.
@@ -19,10 +21,12 @@ export type ApiErrorKind = "network" | "http" | "payload";
 
 export class ApiError extends Error {
   readonly kind: ApiErrorKind;
-  constructor(message: string, kind: ApiErrorKind) {
+  readonly status?: number;
+  constructor(message: string, kind: ApiErrorKind, status?: number) {
     super(message);
     this.name = "ApiError";
     this.kind = kind;
+    this.status = status;
   }
 }
 
@@ -32,12 +36,15 @@ export const BACKEND_HINT =
 /**
  * fetch JSON dengan pesan error yang bisa ditampilkan ke user.
  * - gagal jaringan  → saran cek backend
- * - status bukan 2xx → status HTTP
+ * - status bukan 2xx → pesan `error` dari body backend (bila ada), fallback status HTTP
  * - bukan JSON       → respons tidak valid
+ * - `schema` diberikan → respons di-validasi runtime; selisih kontrak backend
+ *   terdeteksi di sini, bukan sebagai crash saat render.
  */
 export async function fetchJson<T = unknown>(
   path: string,
-  init?: RequestInit
+  init?: RequestInit,
+  schema?: z.ZodType<unknown>
 ): Promise<T> {
   let res: Response;
   try {
@@ -50,17 +57,55 @@ export async function fetchJson<T = unknown>(
   }
 
   if (!res.ok) {
+    let detail = "";
+    try {
+      const body = (await res.json()) as { error?: unknown; details?: unknown };
+      if (typeof body?.error === "string" && body.error.trim()) {
+        detail = body.error.trim();
+      }
+      // Backend menyertakan `details` (array string) untuk error validasi zod.
+      if (Array.isArray(body?.details)) {
+        const extra = body.details
+          .filter((d): d is string => typeof d === "string" && d.trim().length > 0)
+          .join("; ");
+        if (extra) detail = detail ? `${detail} — ${extra}` : extra;
+      }
+    } catch {
+      /* body bukan JSON — pakai status saja */
+    }
     throw new ApiError(
-      `Backend merespons ${res.status} ${res.statusText || ""}`.trim(),
-      "http"
+      detail ||
+        `Backend merespons ${res.status} ${res.statusText || ""}`.trim(),
+      "http",
+      res.status
     );
   }
 
+  let json: unknown;
   try {
-    return (await res.json()) as T;
+    json = await res.json();
   } catch {
     throw new ApiError("Respons backend tidak valid (bukan JSON).", "payload");
   }
+
+  if (schema) {
+    const parsed = schema.safeParse(json);
+    if (!parsed.success) {
+      const first = parsed.error.issues[0];
+      const at = first?.path.length
+        ? ` pada "${first.path.map(String).join(".")}"`
+        : "";
+      throw new ApiError(
+        `Respons backend tidak sesuai kontrak${at}: ${
+          first?.message ?? "format tak dikenal"
+        }.`,
+        "payload"
+      );
+    }
+    return parsed.data as T;
+  }
+
+  return json as T;
 }
 
 /** Pesan singkat untuk ditampilkan di kartu UI (tanpa hint teknis panjang). */

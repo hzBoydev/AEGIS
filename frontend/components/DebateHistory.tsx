@@ -1,10 +1,12 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useCallback, useRef, useState } from "react";
 import { useAccount } from "wagmi";
 import { DebateEventRow } from "@/components/LiveDebate";
 import type { StreamEvent } from "@/components/DebateStream";
 import { fetchJson, shortApiMessage } from "@/lib/api";
+import { useVisibleInterval } from "@/lib/hooks";
+import { debateEnvelopeSchema } from "@/lib/schemas";
 import { truncateAddress } from "@/lib/utils";
 
 interface DebateSession {
@@ -69,6 +71,7 @@ export default function DebateHistory({ address: addressOverride }: { address?: 
   const [payload, setPayload] = useState<DebatePayload | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  const inFlight = useRef(false);
 
   const fresh = payload && address && payload.addr === address ? payload : null;
   const sessions = fresh?.rows ?? [];
@@ -77,49 +80,45 @@ export default function DebateHistory({ address: addressOverride }: { address?: 
   const loading = Boolean(address) && fresh === null;
   const hasMore = total > sessions.length;
 
-  useEffect(() => {
+  const load = useCallback(async () => {
     if (!address) return;
+    if (inFlight.current) return;
+    inFlight.current = true;
     const addr = address;
-    let alive = true;
-
-    async function load() {
-      try {
-        const json = await fetchJson<DebateApiEnvelope>(
-          `/api/debates?limit=${visibleCount}&address=${encodeURIComponent(addr)}`
+    try {
+      const json = await fetchJson<DebateApiEnvelope>(
+        `/api/debates?limit=${visibleCount}&address=${encodeURIComponent(addr)}`,
+        undefined,
+        debateEnvelopeSchema
+      );
+      if (json.success) {
+        const rows: DebateSession[] = (json.data ?? []).filter(
+          (s) => !s.escrowId.startsWith("redteam-")
         );
-        if (!alive) return;
-        if (json.success) {
-          const rows: DebateSession[] = (json.data ?? []).filter(
-            (s: DebateSession) => !s.escrowId.startsWith("redteam-")
-          );
-          setPayload({
-            addr,
-            rows,
-            total: typeof json.total === "number" ? json.total : rows.length,
-          });
-        } else {
-          setPayload({
-            addr,
-            rows: [],
-            total: 0,
-            error: json.error ?? "Permintaan ditolak backend.",
-          });
-        }
-      } catch (err) {
-        if (!alive) return;
-        setPayload({ addr, rows: [], total: 0, error: shortApiMessage(err) });
+        setPayload({
+          addr,
+          rows,
+          total: typeof json.total === "number" ? json.total : rows.length,
+        });
+      } else {
+        setPayload({
+          addr,
+          rows: [],
+          total: 0,
+          error: json.error ?? "Permintaan ditolak backend.",
+        });
       }
+    } catch (err) {
+      setPayload({ addr, rows: [], total: 0, error: shortApiMessage(err) });
+    } finally {
+      inFlight.current = false;
     }
+  }, [address, visibleCount]);
 
+  // Polling berhenti otomatis saat tab tidak terlihat (lihat lib/hooks.ts).
+  useVisibleInterval(() => {
     void load();
-    const t = setInterval(() => {
-      void load();
-    }, 6000);
-    return () => {
-      alive = false;
-      clearInterval(t);
-    };
-  }, [visibleCount, address]);
+  }, 6000, Boolean(address));
 
   return (
     <section className="card overflow-hidden">

@@ -8,7 +8,9 @@
     "dev": "tsx watch index.ts",
     "start": "tsx index.ts",
     "redteam": "tsx redTeam.ts",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
   },
   "keywords": [],
   "author": "",
@@ -18,7 +20,10 @@
     "cors": "^2.8.6",
     "dotenv": "^18.0.0",
     "express": "^5.2.1",
-    "viem": "^2.56.7"
+    "express-rate-limit": "^8.7.0",
+    "helmet": "^8.3.0",
+    "viem": "^2.56.7",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^9.6.0",
@@ -26,6 +31,7 @@
     "@types/express": "^5.0.6",
     "@types/node": "^26.6.1",
     "tsx": "^4.23.13",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.2"
   }
 }

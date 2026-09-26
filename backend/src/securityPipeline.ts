@@ -12,6 +12,7 @@ import {
   type AdvocateResult,
   type DebateTranscript,
 } from "./aiAnalyzer.js";
+import { logger } from "./logger.js";
 import { getAddressMemory, formatMemoryForPrompt } from "./agentMemory.js";
 import { executeTools, sanitizeNeedsData } from "./tools.js";
 import { publish } from "./streamBus.js";
@@ -163,14 +164,14 @@ export async function runSecurityPipeline(
   escrowId?: string
 ): Promise<FinalDecision> {
 
-  console.log(`\n[Security] ─────────────────────────────────────────────`);
-  console.log(`[Security] Checking recipient: ${recipient}`);
-  console.log(`[Security] Sender: ${sender}`);
-  console.log(`[Security] Amount: ${amountBNB} BNB`);
+  logger.log(`\n[Security] ─────────────────────────────────────────────`);
+  logger.log(`[Security] Checking recipient: ${recipient}`);
+  logger.log(`[Security] Sender: ${sender}`);
+  logger.log(`[Security] Amount: ${amountBNB} BNB`);
 
   // ── Step 1: Validate EVM address ──────────────────────────────────────────
   if (!isAddress(recipient)) {
-    console.warn(`[Security] REJECT — invalid EVM address: ${recipient}`);
+    logger.warn(`[Security] REJECT — invalid EVM address: ${recipient}`);
     publish({
       escrowId,
       phase: "rules",
@@ -185,7 +186,7 @@ export async function runSecurityPipeline(
   }
 
   // ── Step 2: Query GoPlus + BscScan in parallel ────────────────────────────
-  console.log(`[Security] Querying GoPlus + BscScan in parallel...`);
+  logger.log(`[Security] Querying GoPlus + BscScan in parallel...`);
   publish({
     escrowId,
     phase: "evidence",
@@ -196,11 +197,11 @@ export async function runSecurityPipeline(
 
   const [security, intel] = await Promise.all([
     checkAddressSecurity(recipient).catch((err): SecurityCheckResult => {
-      console.warn(`[GoPlus] Unexpected error:`, err);
+      logger.warn(`[GoPlus] Unexpected error:`, err);
       return { status: "unavailable", riskFlags: [], source: "unavailable" };
     }),
     getOnChainIntel(recipient).catch((err): OnChainIntel => {
-      console.warn(`[BscScan] Unexpected error:`, err);
+      logger.warn(`[BscScan] Unexpected error:`, err);
       return {
         txCount: null,
         walletAgeInDays: null,
@@ -213,10 +214,10 @@ export async function runSecurityPipeline(
   ]);
 
   // ── Log evidence ──────────────────────────────────────────────────────────
-  console.log(
+  logger.log(
     `[GoPlus]  status=${security.status} flags=[${security.riskFlags.join(", ")}]`
   );
-  console.log(
+  logger.log(
     `[BscScan] txCount=${intel.txCount ?? "?"} ` +
     `age=${intel.walletAgeInDays !== null ? `${intel.walletAgeInDays.toFixed(1)}d` : "?"} ` +
     `isNew=${intel.isNewWallet} ` +
@@ -237,7 +238,7 @@ export async function runSecurityPipeline(
 
   // ── Step 3: Run rule engine ───────────────────────────────────────────────
   const ruleResult = runRules(security, intel, amountBNB);
-  console.log(`[Rules]   decision=${ruleResult.decision} rule=${ruleResult.triggeredRule}`);
+  logger.log(`[Rules]   decision=${ruleResult.decision} rule=${ruleResult.triggeredRule}`);
   publish({
     escrowId,
     phase: "rules",
@@ -252,8 +253,8 @@ export async function runSecurityPipeline(
 
   // ── Step 4: Hard REJECT from rules → generate AI explanation, then stop ────
   if (ruleResult.decision === "REJECT") {
-    console.log(`[Final]   TOLAK (hard rule — ${ruleResult.triggeredRule})`);
-    console.log(`[LLM]     Generating AI explanation for hard rule rejection...`);
+    logger.log(`[Final]   TOLAK (hard rule — ${ruleResult.triggeredRule})`);
+    logger.log(`[LLM]     Generating AI explanation for hard rule rejection...`);
     publish({
       escrowId,
       phase: "final",
@@ -271,7 +272,7 @@ export async function runSecurityPipeline(
       ruleContext: ruleResult.reason,
     });
 
-    console.log(`[Final]   Alasan: ${explanation}`);
+    logger.log(`[Final]   Alasan: ${explanation}`);
     publish({
       escrowId,
       phase: "final",
@@ -297,17 +298,17 @@ export async function runSecurityPipeline(
   const memoryContext = formatMemoryForPrompt(memory);
 
   if (memory.totalSeen > 0) {
-    console.log(
+    logger.log(
       `[Memory]  Recipient seen before: ${memory.totalSeen}x | ` +
       `approved=${memory.totalApproved} rejected=${memory.totalRejected} | ` +
       `hadHardRule=${memory.hadHardRuleReject}`
     );
   } else {
-    console.log(`[Memory]  First time seeing this recipient — no history.`);
+    logger.log(`[Memory]  First time seeing this recipient — no history.`);
   }
 
   // ── Step 6: Call Investigator (with memory context) ──────────────────────────
-  console.log(`[LLM]     Investigator: ${config.OLLAMA_MODEL} via Ollama (dengan memori)...`);
+  logger.log(`[LLM]     Investigator: ${config.OLLAMA_MODEL} via Ollama (dengan memori)...`);
   publish({
     escrowId,
     phase: "investigator",
@@ -319,12 +320,12 @@ export async function runSecurityPipeline(
   let investigator: LLMDecision;
   try {
     investigator = await callLLM({ sender, recipient, amountBNB, security, intel, memoryContext });
-    console.log(
+    logger.log(
       `[Investigator] eligible=${investigator.eligible} ` +
       `confidence=${investigator.confidence.toFixed(2)} ` +
       `riskLevel=${investigator.riskLevel}`
     );
-    console.log(`[Investigator] Reason: ${investigator.reason}`);
+    logger.log(`[Investigator] Reason: ${investigator.reason}`);
     publish({
       escrowId,
       phase: "investigator",
@@ -340,8 +341,8 @@ export async function runSecurityPipeline(
   } catch (err) {
     // ── LLM failure → fail-safe REJECT ──────────────────────────────────────
     const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[LLM]     ERROR: ${msg}`);
-    console.log(`[Final]   REJECT (fail-safe — Investigator unavailable/error)`);
+    logger.error(`[LLM]     ERROR: ${msg}`);
+    logger.log(`[Final]   REJECT (fail-safe — Investigator unavailable/error)`);
     publish({
       escrowId,
       phase: "investigator",
@@ -376,11 +377,11 @@ export async function runSecurityPipeline(
     const { requested, dropped } = sanitizeNeedsData(investigator.needsData);
 
     if (dropped.length > 0) {
-      console.warn(`[Agent]   Tool tidak dikenal diabaikan: ${dropped.join(", ")}`);
+      logger.warn(`[Agent]   Tool tidak dikenal diabaikan: ${dropped.join(", ")}`);
     }
 
     if (requested.length > 0) {
-      console.log(`[Agent]   Investigator meminta data: ${requested.join(", ")}`);
+      logger.log(`[Agent]   Investigator meminta data: ${requested.join(", ")}`);
       publish({
         escrowId,
         phase: "tools",
@@ -389,7 +390,7 @@ export async function runSecurityPipeline(
       });
 
       const exec = await executeTools(requested, { sender, recipient });
-      console.log(
+      logger.log(
         `[Agent]   Tool selesai: ${exec.succeeded.length} sukses, ` +
         `${exec.failed.length} gagal` +
         (exec.failed.length > 0 ? ` (${exec.failed.join(", ")})` : "")
@@ -408,7 +409,7 @@ export async function runSecurityPipeline(
 
       if (exec.succeeded.length > 0) {
         toolResultsBlock = exec.block;
-        console.log(`[Agent]   Investigator putaran ke-2 dengan data tambahan...`);
+        logger.log(`[Agent]   Investigator putaran ke-2 dengan data tambahan...`);
         publish({
           escrowId,
           phase: "investigator",
@@ -428,11 +429,11 @@ export async function runSecurityPipeline(
           });
           investigator = { ...followUp, needsData: [] };
           toolsUsed = exec.succeeded;
-          console.log(
+          logger.log(
             `[Investigator] Updated: eligible=${investigator.eligible} ` +
             `confidence=${investigator.confidence.toFixed(2)}`
           );
-          console.log(`[Investigator] Reason: ${investigator.reason}`);
+          logger.log(`[Investigator] Reason: ${investigator.reason}`);
           publish({
             escrowId,
             phase: "investigator",
@@ -447,7 +448,7 @@ export async function runSecurityPipeline(
           });
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          console.warn(`[Agent]   Putaran ke-2 gagal (${msg}) — memakai penilaian putaran ke-1.`);
+          logger.warn(`[Agent]   Putaran ke-2 gagal (${msg}) — memakai penilaian putaran ke-1.`);
           publish({
             escrowId,
             phase: "investigator",
@@ -457,7 +458,7 @@ export async function runSecurityPipeline(
           });
         }
       } else {
-        console.warn(`[Agent]   Semua tool gagal — memakai penilaian putaran ke-1.`);
+        logger.warn(`[Agent]   Semua tool gagal — memakai penilaian putaran ke-1.`);
       }
     }
   }
@@ -468,7 +469,7 @@ export async function runSecurityPipeline(
 
   try {
     const advPos = investigator.eligible ? "REJECT" : "RELEASE";
-    console.log(
+    logger.log(
       `[Advocate] Membangun argumen untuk posisi ` +
       `${advPos} (berkebalikan dari Investigator)...`
     );
@@ -480,8 +481,8 @@ export async function runSecurityPipeline(
       detail: "Steelman adversarial sedang disusun…",
     });
     advocate = await callAdvocate(llmInput, investigator, toolResultsBlock);
-    console.log(`[Advocate] position=${advocate.position}`);
-    console.log(`[Advocate] Argument: ${advocate.argument}`);
+    logger.log(`[Advocate] position=${advocate.position}`);
+    logger.log(`[Advocate] Argument: ${advocate.argument}`);
     publish({
       escrowId,
       phase: "advocate",
@@ -492,7 +493,7 @@ export async function runSecurityPipeline(
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.warn(`[Advocate] Gagal (${msg}) — Judge tetap jalan tanpa argumen adversarial.`);
+    logger.warn(`[Advocate] Gagal (${msg}) — Judge tetap jalan tanpa argumen adversarial.`);
     publish({
       escrowId,
       phase: "advocate",
@@ -506,7 +507,7 @@ export async function runSecurityPipeline(
   // ── Step 6d: Judge — keputusan final setelah debate ───────────────────────
   let judge: LLMDecision;
   try {
-    console.log(`[Judge]    Menimbang bukti + Investigator + Advocate...`);
+    logger.log(`[Judge]    Menimbang bukti + Investigator + Advocate...`);
     publish({
       escrowId,
       phase: "judge",
@@ -514,12 +515,12 @@ export async function runSecurityPipeline(
       label: "Judge menimbang bukti + kedua opini",
     });
     judge = await callJudge(llmInput, investigator, advocate, toolResultsBlock);
-    console.log(
+    logger.log(
       `[Judge]    eligible=${judge.eligible} ` +
       `confidence=${judge.confidence.toFixed(2)} ` +
       `riskLevel=${judge.riskLevel}`
     );
-    console.log(`[Judge]    Reason: ${judge.reason}`);
+    logger.log(`[Judge]    Reason: ${judge.reason}`);
     publish({
       escrowId,
       phase: "judge",
@@ -534,8 +535,8 @@ export async function runSecurityPipeline(
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[Judge]    ERROR: ${msg}`);
-    console.log(`[Final]    REJECT (fail-safe — Judge unavailable/error)`);
+    logger.error(`[Judge]    ERROR: ${msg}`);
+    logger.log(`[Final]    REJECT (fail-safe — Judge unavailable/error)`);
     publish({
       escrowId,
       phase: "judge",
@@ -587,7 +588,7 @@ export async function runSecurityPipeline(
   });
 
   if (guard.kind === "fail_low_confidence") {
-    console.log(
+    logger.log(
       `[Final]   REJECT (fail-safe — Judge confidence ${judge.confidence.toFixed(2)} < min ${config.HUMAN_CONF_MIN})`
     );
     const lowConfReason =
@@ -608,7 +609,7 @@ export async function runSecurityPipeline(
   // ── Step 8: Hard override check ───────────────────────────────────────────
   // GoPlus malicious ALWAYS wins. Debate tidak bisa mengalahkan security intel.
   if (guard.kind === "override_malicious") {
-    console.log(
+    logger.log(
       `[Final]   REJECT (hard override — GoPlus malicious overrides Judge eligible=${judge.eligible})`
     );
     const overrideExplanation = await generateHardRuleExplanation({
@@ -642,7 +643,7 @@ export async function runSecurityPipeline(
 
   // ── Step 8b: Human-in-the-loop HOLD (jangan submit on-chain) ──────────────
   if (guard.kind === "needs_human") {
-    console.log(`[Final]   HOLD (human review — ${guard.reason})`);
+    logger.log(`[Final]   HOLD (human review — ${guard.reason})`);
     publish({
       escrowId,
       phase: "human",
@@ -683,7 +684,7 @@ export async function runSecurityPipeline(
 
   // ── Step 9: Accept Judge decision ─────────────────────────────────────────
   const outcome = judge.eligible ? "RELEASE" : "REJECT";
-  console.log(
+  logger.log(
     `[Final]   ${outcome} (Judge/debate — confidence=${judge.confidence.toFixed(2)} risk=${judge.riskLevel})`
   );
   publish({

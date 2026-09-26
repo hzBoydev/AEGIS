@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useWriteContract, useWaitForTransactionReceipt } from "wagmi";
 import { parseEther } from "viem";
 import { CONTRACT_ADDRESS, AEGIS_VAULT_ABI } from "@/config/contract";
+import { isValidAddress } from "@/lib/utils";
 
 interface SendFormProps {
   onSubmitted?: () => void;
@@ -14,6 +15,7 @@ const PRESET_AMOUNTS = ["0.001", "0.01", "0.05", "0.1"];
 export default function SendForm({ onSubmitted }: SendFormProps) {
   const [recipient, setRecipient] = useState("");
   const [amount, setAmount] = useState("");
+  const [formError, setFormError] = useState<string | null>(null);
 
   const { writeContract, data: hash, isPending, error } = useWriteContract();
   const { isLoading: isConfirming, isSuccess: isConfirmed } =
@@ -30,13 +32,38 @@ export default function SendForm({ onSubmitted }: SendFormProps) {
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!recipient || !amount) return;
+    setFormError(null);
+
+    const to = recipient.trim();
+    if (!isValidAddress(to)) {
+      setFormError("Alamat penerima tidak valid — gunakan format 0x diikuti 40 karakter hex.");
+      return;
+    }
+
+    const rawAmount = amount.trim();
+    if (!rawAmount) {
+      setFormError("Masukkan jumlah transfer.");
+      return;
+    }
+
+    let value: bigint;
+    try {
+      value = parseEther(rawAmount);
+    } catch {
+      setFormError("Jumlah transfer bukan angka desimal yang valid.");
+      return;
+    }
+    if (value <= BigInt(0)) {
+      setFormError("Jumlah transfer harus lebih besar dari 0.");
+      return;
+    }
+
     writeContract({
       address: CONTRACT_ADDRESS,
       abi: AEGIS_VAULT_ABI,
       functionName: "submitTransfer",
-      args: [recipient as `0x${string}`],
-      value: parseEther(amount),
+      args: [to as `0x${string}`],
+      value,
     });
   }
 
@@ -64,7 +91,10 @@ export default function SendForm({ onSubmitted }: SendFormProps) {
             type="text"
             placeholder="Masukkan alamat dompet (0x...)"
             value={recipient}
-            onChange={(e) => setRecipient(e.target.value)}
+            onChange={(e) => {
+              setRecipient(e.target.value);
+              if (formError) setFormError(null);
+            }}
             className="field font-mono text-xs sm:text-sm"
             autoComplete="off"
             spellCheck={false}
@@ -98,11 +128,21 @@ export default function SendForm({ onSubmitted }: SendFormProps) {
             inputMode="decimal"
             placeholder="Contoh: 0.001"
             value={amount}
-            onChange={(e) => setAmount(e.target.value)}
+            onChange={(e) => {
+              setAmount(e.target.value);
+              if (formError) setFormError(null);
+            }}
             className="field"
             required
           />
         </div>
+
+        {formError && (
+          <div className="alert alert-danger" role="alert">
+            <span aria-hidden className="text-base font-bold">✕</span>
+            <span>{formError}</span>
+          </div>
+        )}
 
         <div className="flex flex-col gap-3 pt-1">
           <button type="submit" disabled={isPending || isConfirming} className="btn btn-bronze w-full">

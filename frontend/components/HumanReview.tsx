@@ -1,8 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useRef, useState } from "react";
+import { useAccount, useSignMessage } from "wagmi";
 import { formatTimestamp, truncateAddress } from "@/lib/utils";
 import { fetchJson, shortApiMessage } from "@/lib/api";
+import { useVisibleInterval } from "@/lib/hooks";
+import { buildVoteMessage } from "@/lib/vote";
+import { pendingHumanEnvelopeSchema } from "@/lib/schemas";
 
 interface PendingHuman {
   id: number;
@@ -31,7 +35,11 @@ interface VoteEnvelope {
 }
 
 async function fetchPending(): Promise<PendingHuman[]> {
-  const json = await fetchJson<PendingEnvelope>("/api/human/pending");
+  const json = await fetchJson<PendingEnvelope>(
+    "/api/human/pending",
+    undefined,
+    pendingHumanEnvelopeSchema
+  );
   if (!json.success) {
     throw new Error(json.error ?? "Antrean tinjauan tidak dapat dimuat.");
   }
@@ -49,58 +57,82 @@ function dedupeByEscrow(rows: PendingHuman[]): PendingHuman[] {
   return out;
 }
 
+/**
+ * Minta wallet menandatangani pesan vote, lalu kirim ke backend.
+ * Sengaja didefinisikan di luar komponen — `Date.now()` tidak boleh dipanggil
+ * dari dalam scope render (aturan purity React/hooks).
+ */
+async function submitVote(input: {
+  escrowId: string;
+  approve: boolean;
+  voter: string;
+  signMessage: (message: string) => Promise<`0x${string}`>;
+}): Promise<VoteEnvelope> {
+  const timestamp = Date.now();
+  const message = buildVoteMessage({
+    voter: input.voter,
+    escrowId: input.escrowId,
+    approve: input.approve,
+    timestamp,
+  });
+  const signature = await input.signMessage(message);
+  return fetchJson<VoteEnvelope>("/api/human/vote", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      escrowId: input.escrowId,
+      approve: input.approve,
+      voter: input.voter,
+      signature,
+      timestamp,
+    }),
+  });
+}
+
 export default function HumanReview() {
   const [items, setItems] = useState<PendingHuman[]>([]);
   const [loading, setLoading] = useState(true);
   const [votingId, setVotingId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [okMsg, setOkMsg] = useState<string | null>(null);
+  const { address, isConnecting, isReconnecting } = useAccount();
+  const { signMessageAsync, isPending: isSigning } = useSignMessage();
+  const inFlight = useRef(false);
 
-  useEffect(() => {
-    let alive = true;
-
-    async function load() {
-      try {
-        const rows = await fetchPending();
-        if (!alive) return;
-        setItems(rows);
-        setError(null);
-      } catch (err) {
-        if (!alive) return;
-        setError(shortApiMessage(err));
-      } finally {
-        if (alive) setLoading(false);
-      }
-    }
-
-    void load();
-    const t = setInterval(() => {
-      void load();
-    }, 4000);
-    return () => {
-      alive = false;
-      clearInterval(t);
-    };
-  }, []);
-
-  async function refresh() {
+  const load = useCallback(async () => {
+    if (inFlight.current) return; // jangan tumpuk request saat jaringan lambat
+    inFlight.current = true;
     try {
-      setItems(await fetchPending());
+      const rows = await fetchPending();
+      setItems(rows);
       setError(null);
     } catch (err) {
       setError(shortApiMessage(err));
+    } finally {
+      inFlight.current = false;
+      setLoading(false);
     }
-  }
+  }, []);
+
+  // Polling berhenti otomatis saat tab tidak terlihat (lihat lib/hooks.ts).
+  useVisibleInterval(() => {
+    void load();
+  }, 4000);
 
   async function vote(escrowId: string, approve: boolean) {
+    if (!address) {
+      setError("Hubungkan dompet Anda sebelum memberikan suara.");
+      return;
+    }
     setVotingId(items.find((i) => i.escrow_id === escrowId)?.id ?? null);
     setError(null);
     setOkMsg(null);
     try {
-      const json = await fetchJson<VoteEnvelope>("/api/human/vote", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ escrowId, approve }),
+      const json = await submitVote({
+        escrowId,
+        approve,
+        voter: address,
+        signMessage: (message) => signMessageAsync({ message }),
       });
       if (!json.success || !json.data) {
         setError(json.error ?? "Keputusan gagal dikirim ke backend.");
@@ -109,8 +141,9 @@ export default function HumanReview() {
       setOkMsg(
         `${approve ? "Transfer disetujui & diteruskan" : "Transfer dibatalkan & dana dikembalikan"} — tx ${String(json.data.txHash).slice(0, 18)}…`
       );
-      await refresh();
+      await load();
     } catch (err) {
+      // Penolakan signature di wallet biasanya lempar error si wallet.
       setError(shortApiMessage(err));
     } finally {
       setVotingId(null);
@@ -137,6 +170,16 @@ export default function HumanReview() {
           <div className="alert alert-safe mb-4" role="status">
             <span aria-hidden className="font-bold">✓</span>
             <span>{okMsg}</span>
+          </div>
+        )}
+        {!address && (
+          <div className="alert mb-4" role="status">
+            <span aria-hidden className="font-bold">ℹ</span>
+            <span>
+              {isConnecting || isReconnecting
+                ? "Menghubungkan dompet…"
+                : "Hubungkan dompet Anda untuk menandatangani keputusan."}
+            </span>
           </div>
         )}
         {error && (
@@ -196,19 +239,19 @@ export default function HumanReview() {
                   <div className="mt-4 flex gap-2.5 pt-1">
                     <button
                       type="button"
-                      disabled={busy}
+                      disabled={busy || isSigning || !address}
                       onClick={() => vote(p.escrow_id, true)}
                       className="btn btn-safe flex-1"
                     >
-                      {busy ? "Memproses…" : "✓ Setujui (Lanjutkan)"}
+                      {busy ? (isSigning ? "Menunggu Signature…" : "Memproses…") : "✓ Setujui (Lanjutkan)"}
                     </button>
                     <button
                       type="button"
-                      disabled={busy}
+                      disabled={busy || isSigning || !address}
                       onClick={() => vote(p.escrow_id, false)}
                       className="btn btn-danger flex-1"
                     >
-                      {busy ? "Memproses…" : "✕ Tolak (Kembalikan Dana)"}
+                      {busy ? (isSigning ? "Menunggu Signature…" : "Memproses…") : "✕ Tolak (Kembalikan Dana)"}
                     </button>
                   </div>
                 </article>

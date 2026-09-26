@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import { getDb } from "./db.js";
 
 export interface AddressMemory {
   totalSeen: number;
@@ -22,8 +22,8 @@ export interface RecentDecision {
   createdAt: string;
 }
 
-// Gunakan DB yang sama dengan db.ts (shared file SQLite)
-const db = new Database("aegis.db", { readonly: false, fileMustExist: false });
+// Koneksi yang sama dengan db.ts (satu koneksi per proses — anti SQLITE_BUSY)
+const db = getDb();
 
 /**
  * Ambil riwayat keputusan AEGIS untuk satu alamat (sebagai recipient).

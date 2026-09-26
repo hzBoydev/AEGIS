@@ -117,6 +117,8 @@ export default function LiveDebate({ bare = false, onOpenPopup }: LiveDebateProp
   const isEligible = finalEv?.data?.eligible === true;
   const finalNotice = finalEv ? (
     <div
+      role="status"
+      aria-live="polite"
       className={`notice ${isEligible ? "notice-safe" : "notice-danger"} justify-between flex-wrap gap-2`}
     >
       <div>
@@ -155,6 +157,9 @@ export default function LiveDebate({ bare = false, onOpenPopup }: LiveDebateProp
     ) : (
       <div
         ref={listRef}
+        aria-live="polite"
+        aria-relevant="additions text"
+        aria-label="Rangkaian tahapan verifikasi"
         className="scroll-thin flex max-h-80 flex-col overflow-y-auto px-5 py-2"
       >
         {sessionEvents.map((ev, i) => (

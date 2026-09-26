@@ -9,6 +9,7 @@ import {
   getDecisionByEscrowId,
   finalizeHumanDecision,
 } from "./db.js";
+import { logger } from "./logger.js";
 import { publish } from "./streamBus.js";
 
 const contractAddress = config.CONTRACT_ADDRESS;
@@ -56,12 +57,12 @@ export async function submitFulfillment(
   eligible: boolean,
   reason: string
 ): Promise<string> {
-  console.log(`\n   Submitting decision to smart contract...`);
+  logger.log(`\n   Submitting decision to smart contract...`);
 
   const maxBytes = await readMaxReasonBytes();
   const safeReason = truncateReason(reason, maxBytes);
   if (safeReason !== reason) {
-    console.warn(
+    logger.warn(
       `   ⚠️ Alasan dipotong ${Buffer.byteLength(reason, "utf8") - Buffer.byteLength(safeReason, "utf8")} B` +
         ` (batas on-chain: ${maxBytes} B)`
     );
@@ -76,9 +77,9 @@ export async function submitFulfillment(
       chain: bscTestnet,
       account,
     });
-    console.log(`   ✅ Transaction submitted: ${txHash}`);
+    logger.log(`   ✅ Transaction submitted: ${txHash}`);
     await publicClient.waitForTransactionReceipt({ hash: txHash });
-    console.log(`   ✅ Confirmed on-chain.`);
+    logger.log(`   ✅ Confirmed on-chain.`);
     return txHash;
   } catch (err) {
     // Contract revert EscrowTimeout: escrow sudah lewat ESCROW_TIMEOUT dan
@@ -115,7 +116,7 @@ export async function submitExpiredClaim(
     account,
   });
   await publicClient.waitForTransactionReceipt({ hash: txHash });
-  console.log(`   ⏳ Escrow expired — dana dikembalikan ke sender: ${txHash}`);
+  logger.log(`   ⏳ Escrow expired — dana dikembalikan ke sender: ${txHash}`);
   return txHash;
 }
 
@@ -158,9 +159,9 @@ async function readEscrowTimeoutSec(): Promise<number | null> {
       functionName: "ESCROW_TIMEOUT",
     });
     escrowTimeoutSecCache = Number(value as bigint);
-    console.log(`⏳ [Escrow] ESCROW_TIMEOUT = ${escrowTimeoutSecCache}s`);
+    logger.log(`⏳ [Escrow] ESCROW_TIMEOUT = ${escrowTimeoutSecCache}s`);
   } catch {
-    console.warn(
+    logger.warn(
       `⏳ [Escrow] Kontrak tidak punya ESCROW_TIMEOUT (build lama?) — fitur expiry dinonaktifkan.`
     );
     escrowTimeoutSecCache = null;
@@ -174,7 +175,7 @@ async function processEscrow(
   trigger: "event" | "poll"
 ) {
   if (processingOrDone.has(escrowId)) {
-    console.log(`[${trigger.toUpperCase()}] Skipping already-processed: ${escrowId.slice(0, 10)}...`);
+    logger.log(`[${trigger.toUpperCase()}] Skipping already-processed: ${escrowId.slice(0, 10)}...`);
     return;
   }
 
@@ -183,7 +184,7 @@ async function processEscrow(
     | { status?: string; tx_hash?: string | null }
     | undefined;
   if (existing && (existing.tx_hash || existing.status === "pending_human")) {
-    console.log(
+    logger.log(
       `[${trigger.toUpperCase()}] Skipping known decision (status=${existing.status ?? "final"}): ${escrowId.slice(0, 10)}...`
     );
     processingOrDone.add(escrowId);
@@ -192,7 +193,7 @@ async function processEscrow(
 
   processingOrDone.add(escrowId);
 
-  console.log(`\n>> [${trigger.toUpperCase()}] Processing escrow: ${escrowId}`);
+  logger.log(`\n>> [${trigger.toUpperCase()}] Processing escrow: ${escrowId}`);
 
   try {
     // ── Guard: kontrak sedang PAUSED (mode darurat) ───────────────────────────
@@ -202,7 +203,7 @@ async function processEscrow(
       processingOrDone.delete(escrowId);
       if (!pausedDeferred.has(escrowId)) {
         pausedDeferred.add(escrowId);
-        console.log(
+        logger.log(
           `[${trigger.toUpperCase()}] Tunda: kontrak sedang pause (mode darurat).`
         );
         publish({
@@ -231,7 +232,7 @@ async function processEscrow(
     // ── Guard: escrow sudah final / kadaluwarsa di kontrak ────────────────────
     // Status: 0 PENDING, 1 COMPLETED, 2 REVERTED, 3 EXPIRED
     if (Number(status) !== 0) {
-      console.log(
+      logger.log(
         `[${trigger.toUpperCase()}] Skip: escrow sudah final on-chain (status=${status}).`
       );
       processingOrDone.add(escrowId);
@@ -243,14 +244,14 @@ async function processEscrow(
       timeoutSec !== null &&
       Math.floor(Date.now() / 1000) >= Number(createdAt) + timeoutSec
     ) {
-      console.log(
+      logger.log(
         `[${trigger.toUpperCase()}] Escrow kedaluwarsa — auto-claim dana kembali ke sender.`
       );
       let claimTx: string | undefined;
       try {
         claimTx = await submitExpiredClaim(escrowId);
       } catch (err) {
-        console.warn(
+        logger.warn(
           `   ⚠️ Auto-claimExpired gagal:`,
           err instanceof Error ? err.message : err
         );
@@ -276,15 +277,15 @@ async function processEscrow(
       | { status?: string; tx_hash?: string | null }
       | undefined;
     if (midFlight && (midFlight.tx_hash || midFlight.status === "pending_human")) {
-      console.log(
+      logger.log(
         `[${trigger.toUpperCase()}] Decision appeared mid-flight — skip: ${escrowId.slice(0, 10)}...`
       );
       return;
     }
 
-    console.log(`   Sender    : ${sender}`);
-    console.log(`   Recipient : ${recipient}`);
-    console.log(`   Amount    : ${amountBNB} BNB`);
+    logger.log(`   Sender    : ${sender}`);
+    logger.log(`   Recipient : ${recipient}`);
+    logger.log(`   Amount    : ${amountBNB} BNB`);
     publish({
       escrowId,
       phase: "escrow",
@@ -297,7 +298,7 @@ async function processEscrow(
     // ── Run AI security pipeline ───────────────────────────────────────────────
     const decision = await runSecurityPipeline(sender, recipient, amountBNB, escrowId);
 
-    console.log(
+    logger.log(
       `\n[Final]   eligible=${decision.eligible} risk=${decision.riskLevel} decidedBy=${decision.decidedBy}` +
         (decision.needsHuman ? " needsHuman=true" : "")
     );
@@ -322,7 +323,8 @@ async function processEscrow(
           ? { humanReason: decision.humanReason }
           : {}),
       });
-      console.log(`   ⏸ Held for human review (belum on-chain).\n`);
+      logger.log(`   ⏸ Held for human review (belum on-chain).\n`);
+      retryAttempts.delete(escrowId);
       // processingOrDone tetap diisi — poller tidak boleh proses ulang sampai vote.
       return;
     }
@@ -348,7 +350,8 @@ async function processEscrow(
       status: "final",
     });
 
-    console.log(`   Saved to database.\n`);
+    logger.log(`   Saved to database.\n`);
+    retryAttempts.delete(escrowId);
     publish({
       escrowId,
       phase: "escrow",
@@ -358,7 +361,7 @@ async function processEscrow(
       data: { txHash },
     });
   } catch (err) {
-    console.error(
+    logger.error(
       `   ❌ Failed to process escrow ${escrowId}:`,
       err instanceof Error ? err.message : err
     );
@@ -369,8 +372,57 @@ async function processEscrow(
       label: "Pemrosesan escrow gagal",
       detail: err instanceof Error ? err.message : String(err),
     });
-    // Keep in processingOrDone to prevent infinite retry loop
+    scheduleRetry(escrowId, err);
   }
+}
+
+// ── Retry escrow yang gagal ───────────────────────────────────────────────────
+// Sebelumnya kegagalan (RPC flake, LLM timeout, dll) = escrow dilewati selamanya
+// dalam sesi ini. Sekarang: backoff → lepas dari processingOrDone supaya
+// fallback poll mengulang, sampai RETRY_MAX_ATTEMPTS tercapai.
+const retryAttempts = new Map<string, number>();
+const retryTimers = new Set<ReturnType<typeof setTimeout>>();
+
+function scheduleRetry(escrowId: string, err: unknown): void {
+  const attempt = (retryAttempts.get(escrowId) ?? 0) + 1;
+  retryAttempts.set(escrowId, attempt);
+  const max = config.RETRY_MAX_ATTEMPTS;
+
+  if (attempt >= max) {
+    logger.error(
+      `   🛑 Escrow ${escrowId.slice(0, 10)}… gagal ${attempt}x — tidak diulang lagi ` +
+        `(butuh intervensi manual / restart).`
+    );
+    publish({
+      escrowId,
+      phase: "escrow",
+      status: "fail",
+      label: "Gagal permanen",
+      detail: `Sudah ${attempt} percobaan. ${err instanceof Error ? err.message : String(err)}`,
+      data: { attempts: attempt, permanent: true },
+    });
+    return; // tetap di processingOrDone → tidak diulang lagi sesi ini
+  }
+
+  const delay = config.RETRY_DELAY_MS * attempt;
+  logger.warn(
+    `   🔁 Escrow ${escrowId.slice(0, 10)}… percobaan ${attempt}/${max} gagal — ` +
+      `mengulang dalam ${Math.round(delay / 1000)}s`
+  );
+  publish({
+    escrowId,
+    phase: "escrow",
+    status: "fail",
+    label: `Percobaan ${attempt}/${max} gagal`,
+    detail: `Mengulang otomatis dalam ${Math.round(delay / 1000)}s.`,
+    data: { attempts: attempt, retryInMs: delay },
+  });
+
+  const timer = setTimeout(() => {
+    retryTimers.delete(timer);
+    processingOrDone.delete(escrowId); // fallback poll akan mengambilnya lagi
+  }, delay);
+  retryTimers.add(timer);
 }
 
 // ── Vote manusia: finalisasi pending_human → on-chain ────────────────────────
@@ -486,7 +538,7 @@ export async function applyHumanVote(
 
 // ── Event listener: react to EscrowCreated within milliseconds ───────────────
 function startEventListener(): () => void {
-  console.log(`⚡ [Event]  Listening for EscrowCreated events on contract ${contractAddress}...`);
+  logger.log(`⚡ [Event]  Listening for EscrowCreated events on contract ${contractAddress}...`);
 
   const FAST_FAIL_LIMIT = 5;
   const FAST_FAIL_WINDOW_MS = 60_000;
@@ -514,7 +566,7 @@ function startEventListener(): () => void {
     try {
       unwatch();
     } catch (err) {
-      console.error(`[Event]  unwatch error:`, err instanceof Error ? err.message : err);
+      logger.error(`[Event]  unwatch error:`, err instanceof Error ? err.message : err);
     }
   }
 
@@ -538,7 +590,7 @@ function startEventListener(): () => void {
       teardownCurrentListener();
 
       const message = err instanceof Error ? err.message : String(err);
-      console.error(`[Event]  watchContractEvent error:`, message);
+      logger.error(`[Event]  watchContractEvent error:`, message);
 
       const now = Date.now();
       failureTimestamps = failureTimestamps.filter((t) => now - t <= FAST_FAIL_WINDOW_MS);
@@ -566,22 +618,22 @@ function startEventListener(): () => void {
       if (failureTimestamps.length >= FAST_FAIL_LIMIT || backoffStep > 0) {
         delayMs = BACKOFF_STEPS_MS[backoffStep] ?? MAX_BACKOFF_MS;
         backoffStep = backoffStep + 1;
-        console.warn(
+        logger.warn(
           `⚠️ [Event]  Repeated listener failures (${consecutiveFailures} consecutive, ` +
             `${failureTimestamps.length} in last ${FAST_FAIL_WINDOW_MS / 1000}s) — RPC may be down. ` +
             `Reconnect backing off: next attempt in ${delayMs}ms...`
         );
       } else if (filterExpired) {
-        console.log(`⚡ [Event]  Filter expired (auto-recover) — reconnecting listener now...`);
+        logger.log(`⚡ [Event]  Filter expired (auto-recover) — reconnecting listener now...`);
       } else if (transient) {
-        console.log(`⚡ [Event]  Transient network error (auto-recover) — reconnecting listener now...`);
+        logger.log(`⚡ [Event]  Transient network error (auto-recover) — reconnecting listener now...`);
       } else {
-        console.warn(`⚠️ [Event]  Unexpected listener error — reconnecting listener now...`);
+        logger.warn(`⚠️ [Event]  Unexpected listener error — reconnecting listener now...`);
       }
 
       if (consecutiveFailures >= DEGRADE_AFTER_FAILURES && !pollingOnlyMode) {
         pollingOnlyMode = true;
-        console.warn(
+        logger.warn(
           `🚨 [Event]  ${consecutiveFailures} consecutive listener failures — entering POLLING-ONLY MODE. ` +
             `fallbackPoll() is now the primary mechanism; event listener keeps retrying in background ` +
             `(max ${MAX_BACKOFF_MS / 1000}s interval).`
@@ -590,7 +642,7 @@ function startEventListener(): () => void {
 
       scheduleReconnect(delayMs);
     } catch (internalErr) {
-      console.error(
+      logger.error(
         `[Event]  internal reconnect handler error:`,
         internalErr instanceof Error ? internalErr.message : internalErr
       );
@@ -614,13 +666,13 @@ function startEventListener(): () => void {
             const args = (log as unknown as { args: { escrowId?: `0x${string}`; sender?: string; recipient?: string; amount?: bigint } }).args;
             const escrowId = args?.escrowId;
             if (!escrowId) {
-              console.warn(`[Event]  Received EscrowCreated log with missing escrowId — skipping.`);
+              logger.warn(`[Event]  Received EscrowCreated log with missing escrowId — skipping.`);
               continue;
             }
             const sender = args?.sender ?? "unknown";
             const recipient = args?.recipient ?? "unknown";
             const amount = args?.amount ?? 0n;
-            console.log(
+            logger.log(
               `\n⚡ [Event]  EscrowCreated detected!` +
               `\n   escrowId  : ${escrowId.slice(0, 18)}...` +
               `\n   sender    : ${sender}` +
@@ -640,7 +692,7 @@ function startEventListener(): () => void {
     }
 
     if (reconnectCount > 0) {
-      console.log(`⚡ [Event]  Event listener reconnected (try ${reconnectCount}).`);
+      logger.log(`⚡ [Event]  Event listener reconnected (try ${reconnectCount}).`);
     }
 
     healthyTimer = setTimeout(() => {
@@ -658,11 +710,11 @@ function startEventListener(): () => void {
       backoffStep = 0;
       pollingOnlyMode = false;
       if (wasPollingOnly) {
-        console.log(
+        logger.log(
           `✅ [Event]  Event listener stable again — exited POLLING-ONLY MODE; event-driven processing resumed.`
         );
       } else {
-        console.log(
+        logger.log(
           `⚡ [Event]  Event listener stable for ${HEALTHY_RESET_MS / 1000}s — failure counters reset.`
         );
       }
@@ -700,7 +752,7 @@ async function fallbackPoll() {
     const missed = pendingIds.filter((id: `0x${string}`) => !processingOrDone.has(id));
 
     if (missed.length > 0) {
-      console.log(
+      logger.log(
         `[Fallback] Found ${missed.length} escrow(s) not yet processed — ` +
         `possibly missed by event listener. Processing now.`
       );
@@ -709,35 +761,56 @@ async function fallbackPoll() {
       }
     }
   } catch (err) {
-    console.error(`[Fallback] Error during fallback poll:`, err);
+    logger.error(`[Fallback] Error during fallback poll:`, err);
   }
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
-export function startEventDrivenOracle() {
-  console.log(`🔮 AEGIS AI Oracle Service started (Event-Driven Mode).`);
-  console.log(`   Oracle address  : ${account.address}`);
-  console.log(`   Contract        : ${contractAddress}`);
-  console.log(`   LLM model       : ${config.OLLAMA_MODEL}`);
-  console.log(`   Confidence min  : ${config.LLM_CONFIDENCE_THRESHOLD}`);
-  console.log(
+let stopListener: (() => void) | undefined;
+let fallbackTimer: ReturnType<typeof setInterval> | undefined;
+
+export function startEventDrivenOracle(): () => void {
+  logger.log(`🔮 AEGIS AI Oracle Service started (Event-Driven Mode).`);
+  logger.log(`   Oracle address  : ${account.address}`);
+  logger.log(`   Contract        : ${contractAddress}`);
+  logger.log(`   LLM model       : ${config.OLLAMA_MODEL}`);
+  logger.log(`   Confidence min  : ${config.LLM_CONFIDENCE_THRESHOLD}`);
+  logger.log(
     `   Human review    : ${config.HUMAN_ESCALATION_ENABLED ? `ON (conf ${config.HUMAN_CONF_MIN}–${config.LLM_CONFIDENCE_THRESHOLD})` : "OFF"}`
   );
-  console.log(`   Fallback poll   : every ${config.POLLING_INTERVAL_MS}ms (safety net)\n`);
+  logger.log(`   Fallback poll   : every ${config.POLLING_INTERVAL_MS}ms (safety net)\n`);
 
   // 0. Warmup: load model LLM ke VRAM sebelum escrow pertama (anti cold-load timeout)
   void warmupOllama();
 
   // 1. Start real-time event listener (primary mechanism)
-  startEventListener();
+  stopListener = startEventListener();
 
   // 2. Do an immediate sweep to catch any escrows that existed before startup
-  console.log(`[Startup]  Checking for pre-existing pending escrows...`);
+  logger.log(`[Startup]  Checking for pre-existing pending escrows...`);
   void fallbackPoll();
 
   // 3. Schedule periodic fallback poll as safety net
   //    (catches escrows if WebSocket/RPC drops events)
-  setInterval(fallbackPoll, config.POLLING_INTERVAL_MS);
+  fallbackTimer = setInterval(fallbackPoll, config.POLLING_INTERVAL_MS);
+
+  return stopOracle;
+}
+
+/**
+ * Hentikan seluruh aktivitas poller (event listener, fallback poll, retry timer).
+ * Dipanggil saat graceful shutdown.
+ */
+export function stopOracle(): void {
+  stopListener?.();
+  stopListener = undefined;
+  if (fallbackTimer) {
+    clearInterval(fallbackTimer);
+    fallbackTimer = undefined;
+  }
+  for (const timer of retryTimers) clearTimeout(timer);
+  retryTimers.clear();
+  logger.log(`🛑 Oracle poller dihentikan.`);
 }
 
 /** @deprecated Use startEventDrivenOracle() instead */

@@ -2,6 +2,7 @@ import { config } from "./config.js";
 import type { SecurityCheckResult } from "./goplusChecker.js";
 import type { OnChainIntel } from "./bscscanChecker.js";
 import { TOOL_CATALOG } from "./tools.js";
+import { logger } from "./logger.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 export interface LLMDecision {
@@ -113,9 +114,9 @@ export async function warmupOllama(): Promise<void> {
         clearTimeout(timer);
       }
     });
-    console.log(`[LLM]     Model ${config.OLLAMA_MODEL} siap (warmup selesai).`);
+    logger.log(`[LLM]     Model ${config.OLLAMA_MODEL} siap (warmup selesai).`);
   } catch (err) {
-    console.warn(
+    logger.warn(
       `[LLM]     Warmup gagal (${err instanceof Error ? err.message : err}) — akan dicoba ulang otomatis pada call pertama.`
     );
   }
@@ -725,14 +726,14 @@ Kembalikan HANYA string JSON dengan format:
       }
     });
 
-    console.log(`[LLM]     Explanation generated: ${result.slice(0, 80)}...`);
+    logger.log(`[LLM]     Explanation generated: ${result.slice(0, 80)}...`);
     return result;
   } catch (err) {
     const isAbort = err instanceof Error && err.name === "AbortError";
     if (isAbort) {
-      console.warn(`[LLM]     Explanation timeout — using rule context`);
+      logger.warn(`[LLM]     Explanation timeout — using rule context`);
     } else {
-      console.warn(`[LLM]     Explanation failed (${err}) — using rule context`);
+      logger.warn(`[LLM]     Explanation failed (${err}) — using rule context`);
     }
     // Fallback: return the structured rule context as-is
     return ruleContext;
