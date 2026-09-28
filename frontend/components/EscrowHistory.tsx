@@ -177,7 +177,7 @@ export default function EscrowHistory({ address: addressOverride }: { address?: 
                       aria-expanded={expanded}
                     >
                       <span
-                        className={`text-ink text-xs leading-relaxed ${
+                        className={`text-ink text-xs leading-relaxed whitespace-pre-line ${
                           expanded || !longReason ? "" : "line-clamp-2"
                         }`}
                       >

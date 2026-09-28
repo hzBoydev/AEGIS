@@ -191,7 +191,7 @@ export default function HumanReview() {
                     </p>
                   )}
 
-                  <p className="text-ink mt-3 text-sm leading-relaxed">{p.reasoning}</p>
+                  <p className="text-ink mt-3 text-sm leading-relaxed whitespace-pre-line">{p.reasoning}</p>
 
                   <div className="mt-4 flex gap-2.5 pt-1">
                     <button

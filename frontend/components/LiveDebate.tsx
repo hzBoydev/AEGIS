@@ -57,7 +57,7 @@ export function DebateEventRow({
               <p className="text-ink text-sm font-medium leading-snug">{ev.label}</p>
               {ev.detail && (
                 <p
-                  className={`text-muted mt-1 text-xs leading-relaxed break-words ${
+                  className={`text-muted mt-1 text-xs leading-relaxed break-words whitespace-pre-line ${
                     clampDetail ? "line-clamp-2" : ""
                   }`}
                 >
@@ -125,7 +125,7 @@ export default function LiveDebate({ bare = false, onOpenPopup }: LiveDebateProp
         </p>
         <p className="text-xs opacity-90 mt-0.5">{finalEv.label}</p>
         {finalEv.detail && (
-          <p className="mt-1 text-xs leading-relaxed opacity-85">{finalEv.detail}</p>
+          <p className="mt-1 text-xs leading-relaxed opacity-85 whitespace-pre-line">{finalEv.detail}</p>
         )}
       </div>
       {typeof finalEv.data?.confidence === "number" && (

@@ -16,6 +16,19 @@ export interface HardRuleResult {
   triggeredRule: string;
 }
 
+/**
+ * Deskripsi jumlah transaksi yang JUJUR terhadap sumbernya.
+ * Nonce RPC hanya menghitung transaksi keluar — menulisnya sebagai
+ * "N transaksi on-chain" menyesatkan untuk akun yang hanya menerima.
+ */
+function describeActivity(intel: OnChainIntel, txCount: number): string {
+  if (intel.txCount === null) return "jumlah transaksi tidak diketahui";
+  if (intel.txCountSource === "rpc_nonce") {
+    return `${txCount} transaksi keluar (nonce; transaksi masuk tidak terhitung)`;
+  }
+  return `${txCount} transaksi (explorer)`;
+}
+
 // ── Rule Engine ───────────────────────────────────────────────────────────────
 /**
  * Deterministic, explainable rule engine.
@@ -130,7 +143,7 @@ export function runRules(
       reason: [
         `Wallet sangat baru (umur: ${formatAge(intel.walletAgeInDays)},`,
         `batas: < ${config.NEW_WALLET_DAYS} hari),`,
-        `aktivitas on-chain sangat rendah (${txCount} transaksi,`,
+        `aktivitas tercatat sangat rendah (${describeActivity(intel, txCount)},`,
         `batas: <= ${config.LOW_TX_COUNT_THRESHOLD}),`,
         `dan menerima transfer dalam jumlah cukup besar sebesar ${amountBNB} BNB`,
         `(batas: >= ${config.SIGNIFICANT_TRANSFER_BNB} BNB).`,
@@ -147,7 +160,7 @@ export function runRules(
       decision: "NEEDS_LLM",
       reason: [
         `Wallet baru (umur: ${formatAge(intel.walletAgeInDays)})`,
-        `dengan aktivitas on-chain rendah (${txCount} transaksi).`,
+        `dengan aktivitas tercatat rendah (${describeActivity(intel, txCount)}).`,
         `Jumlah transfer di bawah batas signifikan (${amountBNB} BNB < ${config.SIGNIFICANT_TRANSFER_BNB} BNB).`,
         `Diteruskan ke LLM untuk penilaian kontekstual.`,
       ].join(" "),
@@ -210,7 +223,7 @@ export function runRules(
       reason: [
         `Wallet berumur ${formatAge(walletAge)} (kategori menengah:`,
         `${config.NEW_WALLET_DAYS}–${config.MEDIUM_WALLET_DAYS} hari)`,
-        `dengan aktivitas rendah (${txCount} transaksi, batas <= ${config.MEDIUM_TX_THRESHOLD})`,
+        `dengan aktivitas tercatat rendah (${describeActivity(intel, txCount)}, batas <= ${config.MEDIUM_TX_THRESHOLD})`,
         `dan menerima transfer ${amountBNB} BNB (>= ${config.SIGNIFICANT_TRANSFER_BNB} BNB).`,
         `Profil semi-baru dengan aktivitas minimal memerlukan evaluasi LLM.`,
       ].join(" "),

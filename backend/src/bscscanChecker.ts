@@ -1,6 +1,15 @@
 import { config, publicClient } from "./config.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
+/**
+ * Asal angka `txCount` — menentukan ARTI angka tersebut:
+ * - "explorer" : jumlah transaksi masuk+keluar dari explorer (BscScan/Etherscan).
+ * - "rpc_nonce": nonce dari RPC = hanya transaksi KELUAR. Transaksi masuk TIDAK
+ *                terhitung, sehingga akun penerima murni bernilai 0.
+ * - "none"     : tidak ada sumber sama sekali (txCount null).
+ */
+export type TxCountSource = "explorer" | "rpc_nonce" | "none";
+
 export interface OnChainIntel {
   /**
    * Jumlah transaksi. null jika benar-benar tidak tersedia.
@@ -8,6 +17,8 @@ export interface OnChainIntel {
    * nonce RPC (transaksi KELUAR — proxy aktivitas, bukan total in+out).
    */
   txCount: number | null;
+  /** Dari mana `txCount` berasal — WAJIB dibaca saat menampilkan/menjelaskan angka. */
+  txCountSource: TxCountSource;
   /**
    * Wallet age in days since first transaction. null jika tidak diketahui.
    * CATATAN: hanya bisa diambil dari explorer — RPC tidak punya riwayat
@@ -220,11 +231,13 @@ export async function getOnChainIntel(address: string): Promise<OnChainIntel> {
 
     // ── Parse tx count & wallet age ───────────────────────────────────────────
     let txCount: number | null = null;
+    let txCountSource: TxCountSource = "none";
     let walletAgeInDays: number | null = null;
 
     if (txListResp && txListResp.status === "1" && Array.isArray(txListResp.result)) {
       const parsed = parseFirstTxAge(txListResp.result);
       txCount = parsed.txCount;
+      txCountSource = "explorer";
       walletAgeInDays = parsed.walletAgeInDays;
     } else if (
       txListResp &&
@@ -234,6 +247,7 @@ export async function getOnChainIntel(address: string): Promise<OnChainIntel> {
     ) {
       // "No transactions found" — valid empty response
       txCount = 0;
+      txCountSource = "explorer";
       walletAgeInDays = null;
     }
     // status "0" LAINNYA (NOTOK / endpoint deprecated / rate limit) TIDAK boleh
@@ -279,6 +293,7 @@ export async function getOnChainIntel(address: string): Promise<OnChainIntel> {
     if (txCount === null && nonceRes.status === "fulfilled") {
       // Proxy aktivitas: nonce EOA = jumlah transaksi KELUAR (bukan total in+out).
       txCount = Number(nonceRes.value);
+      txCountSource = "rpc_nonce";
     }
     if (codeRes.status === "fulfilled" && codeRes.value !== undefined) {
       // getCode adalah ground truth untuk status contract (lebih andal dari
@@ -297,6 +312,7 @@ export async function getOnChainIntel(address: string): Promise<OnChainIntel> {
 
     return {
       txCount,
+      txCountSource,
       walletAgeInDays,
       isNewWallet,
       isContract,
@@ -308,6 +324,7 @@ export async function getOnChainIntel(address: string): Promise<OnChainIntel> {
     console.warn(`[BscScan] Error fetching intel for ${address}:`, err);
     return {
       txCount: null,
+      txCountSource: "none",
       walletAgeInDays: null,
       isNewWallet: false,
       isContract: false,

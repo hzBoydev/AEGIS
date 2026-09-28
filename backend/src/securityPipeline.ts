@@ -12,7 +12,12 @@ import {
   type AdvocateResult,
   type DebateTranscript,
 } from "./aiAnalyzer.js";
-import { getAddressMemory, formatMemoryForPrompt } from "./agentMemory.js";
+import {
+  getAddressMemory,
+  formatMemoryForPrompt,
+  formatMemoryFacts,
+  type AddressMemory,
+} from "./agentMemory.js";
 import { executeTools, sanitizeNeedsData } from "./tools.js";
 import { publish } from "./streamBus.js";
 
@@ -203,6 +208,7 @@ export async function runSecurityPipeline(
       console.warn(`[BscScan] Unexpected error:`, err);
       return {
         txCount: null,
+        txCountSource: "none",
         walletAgeInDays: null,
         isNewWallet: false,
         isContract: false,
@@ -217,7 +223,7 @@ export async function runSecurityPipeline(
     `[GoPlus]  status=${security.status} flags=[${security.riskFlags.join(", ")}]`
   );
   console.log(
-    `[BscScan] txCount=${intel.txCount ?? "?"} ` +
+    `[BscScan] txCount=${intel.txCount ?? "?"}(${intel.txCountSource}) ` +
     `age=${intel.walletAgeInDays !== null ? `${intel.walletAgeInDays.toFixed(1)}d` : "?"} ` +
     `isNew=${intel.isNewWallet} ` +
     `isContract=${intel.isContract} ` +
@@ -229,7 +235,7 @@ export async function runSecurityPipeline(
     status: "ok",
     label: `GoPlus ${security.status}`,
     detail:
-      `txCount=${intel.txCount ?? "?"}, umur=${intel.walletAgeInDays !== null ? intel.walletAgeInDays.toFixed(1) + "d" : "?"}, ` +
+      `txCount=${intel.txCount ?? "?"}(${intel.txCountSource}), umur=${intel.walletAgeInDays !== null ? intel.walletAgeInDays.toFixed(1) + "d" : "?"}, ` +
       `saldo=${intel.balanceBNB !== null ? intel.balanceBNB.toFixed(4) + " BNB" : "?"}` +
       (security.riskFlags.length > 0 ? `, flags=[${security.riskFlags.join(", ")}]` : ""),
     data: { goplus: security.status, flags: security.riskFlags },
@@ -250,7 +256,21 @@ export async function runSecurityPipeline(
     data: { decision: ruleResult.decision, rule: ruleResult.triggeredRule },
   });
 
-  // ── Step 4: Hard REJECT from rules → generate AI explanation, then stop ────
+  // ── Step 4: Load agent memory (dipakai penjelasan hard rule & sidang AI) ────
+  const memory = getAddressMemory(recipient);
+  const memoryContext = formatMemoryForPrompt(memory);
+
+  if (memory.totalSeen > 0) {
+    console.log(
+      `[Memory]  Recipient seen before: ${memory.totalSeen}x | ` +
+      `approved=${memory.totalApproved} rejected=${memory.totalRejected} | ` +
+      `hadHardRule=${memory.hadHardRuleReject}`
+    );
+  } else {
+    console.log(`[Memory]  First time seeing this recipient — no history.`);
+  }
+
+  // ── Step 5: Hard REJECT from rules → generate AI explanation, then stop ────
   if (ruleResult.decision === "REJECT") {
     console.log(`[Final]   TOLAK (hard rule — ${ruleResult.triggeredRule})`);
     console.log(`[LLM]     Generating AI explanation for hard rule rejection...`);
@@ -267,43 +287,31 @@ export async function runSecurityPipeline(
       amountBNB,
       security,
       intel,
+      memoryContext,
       triggeredRule: ruleResult.triggeredRule,
       ruleContext: ruleResult.reason,
     });
+    const finalReason = finalizeReason(explanation, intel, memory);
 
-    console.log(`[Final]   Alasan: ${explanation}`);
+    console.log(`[Final]   Alasan: ${finalReason}`);
     publish({
       escrowId,
       phase: "final",
       status: "done",
       label: "DITOLAK (hard rule)",
-      detail: explanation,
+      detail: finalReason,
       data: { eligible: false, decidedBy: "hard_rule" },
     });
     return {
       eligible: false,
       confidence: 1.0,
       riskLevel: "CRITICAL",
-      reason: explanation,
+      reason: finalReason,
       decidedBy: "hard_rule",
       triggeredRule: ruleResult.triggeredRule,
       toolsUsed: [],
       evidence: { security, intel },
     };
-  }
-
-  // ── Step 5: Load agent memory for recipient ─────────────────────────────
-  const memory = getAddressMemory(recipient);
-  const memoryContext = formatMemoryForPrompt(memory);
-
-  if (memory.totalSeen > 0) {
-    console.log(
-      `[Memory]  Recipient seen before: ${memory.totalSeen}x | ` +
-      `approved=${memory.totalApproved} rejected=${memory.totalRejected} | ` +
-      `hadHardRule=${memory.hadHardRuleReject}`
-    );
-  } else {
-    console.log(`[Memory]  First time seeing this recipient — no history.`);
   }
 
   // ── Step 6: Call Investigator (with memory context) ──────────────────────────
@@ -319,6 +327,9 @@ export async function runSecurityPipeline(
   let investigator: LLMDecision;
   try {
     investigator = await callLLM({ sender, recipient, amountBNB, security, intel, memoryContext });
+    // Baris Fakta juga dipasang di reason Investigator — transkrip sidang yang
+    // dibaca user tetap konsisten walau model melanggar aturan penulisan.
+    investigator = { ...investigator, reason: finalizeReason(investigator.reason, intel, memory) };
     console.log(
       `[Investigator] eligible=${investigator.eligible} ` +
       `confidence=${investigator.confidence.toFixed(2)} ` +
@@ -342,6 +353,11 @@ export async function runSecurityPipeline(
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[LLM]     ERROR: ${msg}`);
     console.log(`[Final]   REJECT (fail-safe — Investigator unavailable/error)`);
+    const llmFailReason = finalizeReason(
+      `Analisis Investigator gagal (${msg}). Dana dikembalikan ke pengirim sebagai tindakan fail-safe.`,
+      intel,
+      memory
+    );
     publish({
       escrowId,
       phase: "investigator",
@@ -354,11 +370,11 @@ export async function runSecurityPipeline(
       phase: "final",
       status: "done",
       label: "DITOLAK (fail-safe)",
-      detail: `Analisis Investigator gagal (${msg}).`,
+      detail: llmFailReason,
       data: { eligible: false, decidedBy: "fail_safe" },
     });
     return failSafe(
-      `Analisis Investigator gagal (${msg}). Dana dikembalikan ke pengirim sebagai tindakan fail-safe.`,
+      llmFailReason,
       "FAIL_LLM_ERROR",
       security,
       intel
@@ -426,7 +442,11 @@ export async function runSecurityPipeline(
             toolResults: exec.block,
             followUp: true,
           });
-          investigator = { ...followUp, needsData: [] };
+          investigator = {
+            ...followUp,
+            needsData: [],
+            reason: finalizeReason(followUp.reason, intel, memory),
+          };
           toolsUsed = exec.succeeded;
           console.log(
             `[Investigator] Updated: eligible=${investigator.eligible} ` +
@@ -520,12 +540,16 @@ export async function runSecurityPipeline(
       `riskLevel=${judge.riskLevel}`
     );
     console.log(`[Judge]    Reason: ${judge.reason}`);
+    // Reason Judge yang tampil ke user (transcript + event) selalu lewat
+    // finalizeReason; `judge.reason` mentah tetap dipertahankan untuk dirangkai
+    // ke alasan hold/fail-safe di bawah (agar baris Fakta tidak tertanam 2x).
+    const judgeReasonDisplay = finalizeReason(judge.reason, intel, memory);
     publish({
       escrowId,
       phase: "judge",
       status: "ok",
       label: `Judge: ${judge.eligible ? "PUTUS RELEASE" : "PUTUS REJECT"}`,
-      detail: judge.reason,
+      detail: judgeReasonDisplay,
       data: {
         eligible: judge.eligible,
         confidence: judge.confidence,
@@ -536,6 +560,11 @@ export async function runSecurityPipeline(
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[Judge]    ERROR: ${msg}`);
     console.log(`[Final]    REJECT (fail-safe — Judge unavailable/error)`);
+    const judgeFailReason = finalizeReason(
+      `Sidang AI gagal (${msg}). Dana dikembalikan ke pengirim sebagai tindakan fail-safe.`,
+      intel,
+      memory
+    );
     publish({
       escrowId,
       phase: "judge",
@@ -548,11 +577,11 @@ export async function runSecurityPipeline(
       phase: "final",
       status: "done",
       label: "DITOLAK (fail-safe)",
-      detail: `Sidang AI gagal (${msg}).`,
+      detail: judgeFailReason,
       data: { eligible: false, decidedBy: "fail_safe" },
     });
     return failSafe(
-      `Sidang AI gagal (${msg}). Dana dikembalikan ke pengirim sebagai tindakan fail-safe.`,
+      judgeFailReason,
       "FAIL_LLM_ERROR",
       security,
       intel
@@ -571,7 +600,7 @@ export async function runSecurityPipeline(
       eligible: judge.eligible,
       confidence: judge.confidence,
       riskLevel: judge.riskLevel,
-      reason: judge.reason,
+      reason: finalizeReason(judge.reason, intel, memory),
     },
   };
 
@@ -594,15 +623,16 @@ export async function runSecurityPipeline(
       `Confidence hakim AI (${(judge.confidence * 100).toFixed(0)}%) di bawah ` +
       `batas minimum (${(config.HUMAN_CONF_MIN * 100).toFixed(0)}%). ` +
       `Dana dikembalikan ke pengirim sebagai tindakan fail-safe. Analisis Judge: ${judge.reason}`;
+    const finalReason = finalizeReason(lowConfReason, intel, memory);
     publish({
       escrowId,
       phase: "final",
       status: "done",
       label: "DITOLAK (confidence rendah)",
-      detail: lowConfReason,
+      detail: finalReason,
       data: { eligible: false, decidedBy: "fail_safe", confidence: judge.confidence },
     });
-    return failSafe(lowConfReason, "FAIL_LOW_CONFIDENCE", security, intel);
+    return failSafe(finalReason, "FAIL_LOW_CONFIDENCE", security, intel);
   }
 
   // ── Step 8: Hard override check ───────────────────────────────────────────
@@ -616,22 +646,24 @@ export async function runSecurityPipeline(
       amountBNB,
       security,
       intel,
+      memoryContext,
       triggeredRule: "OVERRIDE_GOPLUS_MALICIOUS",
       ruleContext: `GoPlus mendeteksi sinyal berbahaya [${security.riskFlags.join(", ")}] pada alamat ini. Hard security rule mengalahkan keputusan debate AI.`,
     });
+    const finalReason = finalizeReason(overrideExplanation, intel, memory);
     publish({
       escrowId,
       phase: "final",
       status: "done",
       label: "DITOLAK (override GoPlus)",
-      detail: overrideExplanation,
+      detail: finalReason,
       data: { eligible: false, decidedBy: "hard_rule" },
     });
     return {
       eligible: false,
       confidence: 1.0,
       riskLevel: "CRITICAL",
-      reason: overrideExplanation,
+      reason: finalReason,
       decidedBy: "hard_rule",
       triggeredRule: "OVERRIDE_GOPLUS_MALICIOUS",
       toolsUsed,
@@ -643,6 +675,11 @@ export async function runSecurityPipeline(
   // ── Step 8b: Human-in-the-loop HOLD (jangan submit on-chain) ──────────────
   if (guard.kind === "needs_human") {
     console.log(`[Final]   HOLD (human review — ${guard.reason})`);
+    const finalReason = finalizeReason(
+      `${guard.reason} Rekomendasi AI: ${judge.eligible ? "RELEASE" : "REJECT"}. ${judge.reason}`,
+      intel,
+      memory
+    );
     publish({
       escrowId,
       phase: "human",
@@ -660,7 +697,7 @@ export async function runSecurityPipeline(
       phase: "final",
       status: "start",
       label: "HOLD — bukan putusan final",
-      detail: guard.reason,
+      detail: finalReason,
       data: {
         needsHuman: true,
         aiRecommendation: judge.eligible,
@@ -671,7 +708,7 @@ export async function runSecurityPipeline(
       eligible: judge.eligible,
       confidence: judge.confidence,
       riskLevel: judge.riskLevel,
-      reason: `${guard.reason} Rekomendasi AI: ${judge.eligible ? "RELEASE" : "REJECT"}. ${judge.reason}`,
+      reason: finalReason,
       decidedBy: "human_review",
       needsHuman: true,
       humanReason: guard.reason,
@@ -683,6 +720,7 @@ export async function runSecurityPipeline(
 
   // ── Step 9: Accept Judge decision ─────────────────────────────────────────
   const outcome = judge.eligible ? "RELEASE" : "REJECT";
+  const finalReason = finalizeReason(judge.reason, intel, memory);
   console.log(
     `[Final]   ${outcome} (Judge/debate — confidence=${judge.confidence.toFixed(2)} risk=${judge.riskLevel})`
   );
@@ -691,7 +729,7 @@ export async function runSecurityPipeline(
     phase: "final",
     status: "done",
     label: judge.eligible ? "DITERUSKAN" : "DIKEMBALIKAN",
-    detail: judge.reason,
+    detail: finalReason,
     data: {
       eligible: judge.eligible,
       confidence: judge.confidence,
@@ -704,7 +742,7 @@ export async function runSecurityPipeline(
     eligible: judge.eligible,
     confidence: judge.confidence,
     riskLevel: judge.riskLevel,
-    reason: judge.reason,
+    reason: finalReason,
     decidedBy: "llm",
     toolsUsed,
     debate,
@@ -713,6 +751,88 @@ export async function runSecurityPipeline(
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+/**
+ * Finalisasi reason yang ditampilkan ke user: (1) koreksi deterministik frasa
+ * yang bertentangan dengan data, (2) sisipkan baris "Fakta" dari KODE (bukan
+ * dari model) — dijamin memuat jumlah transaksi (dengan sumbernya) + riwayat
+ * AEGIS, apa pun output LLM. Reason tetap dikirim on-chain (dipotong bila > batas).
+ *
+ * Diekspor agar bisa diuji langsung (smoke test) tanpa menjalankan pipeline penuh.
+ */
+export function finalizeReason(
+  reason: string,
+  intel: OnChainIntel,
+  memory: AddressMemory
+): string {
+  const txPart =
+    intel.txCount === null
+      ? "jumlah transaksi = tidak diketahui"
+      : intel.txCountSource === "explorer"
+        ? `transaksi on-chain akun = ${intel.txCount} (explorer, masuk+keluar)`
+        : `transaksi keluar = ${intel.txCount} (nonce RPC — transaksi masuk tidak terhitung; explorer tidak tersedia)`;
+  const memori = formatMemoryFacts(memory);
+  const body = normalizeReasonFacts(reason, intel, memory);
+  // Baris Fakta dipasang di AWAL: reason dikirim on-chain lewat truncateReason()
+  // (batas MAX_REASON_BYTES ~1 KB) — kalau di belakang, justru bagian pertama
+  // yang terpotong. Fungsi ini idempotent (baris Fakta lama dibuang dulu).
+  return `Fakta: ${txPart} · riwayat AEGIS = ${memori}\n${body}`;
+}
+
+/**
+ * Koreksi deterministik terhadap frasa reason yang BERTENTANGAN dengan data
+ * (model 8B kadang tetap melanggar aturan prompt). Hanya menyentuh pola yang
+ * salah secara obyektif:
+ *  - txCount bersumber nonce RPC (transaksi keluar) tidak boleh ditulis
+ *    "N transaksi on-chain";
+ *  - memori AEGIS dengan N>0 tidak boleh ditulis "evaluasi pertama".
+ * Baris "Fakta" lama (bila reason sudah pernah difinalisasi) ikut dibuang agar
+ * finalizeReason aman dipanggil berulang.
+ */
+function normalizeReasonFacts(
+  reason: string,
+  intel: OnChainIntel,
+  memory: AddressMemory
+): string {
+  let out = reason.replace(/[ \t]*Fakta: [^\n]*/g, " ");
+
+  if (intel.txCountSource === "rpc_nonce" && intel.txCount !== null) {
+    const n = intel.txCount;
+    out = out.replace(
+      new RegExp(`\\b${n}\\s+transaksi on-chain\\b`, "gi"),
+      `${n} transaksi keluar (nonce RPC)`
+    );
+    out = out.replace(
+      new RegExp(`\\briwayat transaksi\\s+${n}\\b`, "gi"),
+      `riwayat transaksi keluar ${n}`
+    );
+    out = out.replace(/\btanpa transaksi on-chain\b/gi, "tanpa transaksi keluar (nonce RPC)");
+  } else if (intel.txCount === null) {
+    out = out.replace(/\b\d+\s+transaksi on-chain\b/gi, "jumlah transaksi tidak diketahui");
+  }
+
+  if (memory.totalSeen > 0) {
+    const seen = memory.totalSeen;
+    out = out.replace(
+      /(^|[\s.,;:)])(?:dan\s+)?belum pernah (?:bertransaksi(?:\s+via\s+AEGIS)?|dievaluasi)(?:\s*\(?\s*evaluasi pertama\s*\)?)?/gi,
+      (_m, pre: string) => `${pre}sudah ${seen}x bertransaksi via AEGIS`
+    );
+    out = out.replace(
+      /(^|[\s.,;:)])(?:dan\s+)?belum pernah dievaluasi/gi,
+      (_m, pre: string) => `${pre}sudah ${seen}x dievaluasi`
+    );
+    out = out.replace(
+      /([ \t]*)\(?\s*evaluasi pertama\s*\)?/gi,
+      (_m, sp: string) => `${sp}evaluasi ke-${seen} AEGIS`
+    );
+  }
+
+  return out
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{2,}/g, "\n")
+    .trim();
+}
+
 function failSafe(
   reason: string,
   triggeredRule: string,
@@ -731,6 +851,7 @@ function failSafe(
       security: security ?? { status: "unavailable", riskFlags: [], source: "unavailable" },
       intel: intel ?? {
         txCount: null,
+        txCountSource: "none",
         walletAgeInDays: null,
         isNewWallet: false,
         isContract: false,

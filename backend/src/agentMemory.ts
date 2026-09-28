@@ -138,7 +138,7 @@ export function getAddressMemory(address: string): AddressMemory {
  */
 export function formatMemoryForPrompt(memory: AddressMemory): string {
   if (memory.totalSeen === 0) {
-    return "MEMORI HISTORIS AEGIS:\n  Alamat ini BELUM PERNAH dilihat sebelumnya oleh sistem AEGIS. Ini adalah evaluasi pertama.";
+    return "MEMORI HISTORIS AEGIS (riwayat INTERNAL — BUKAN data on-chain):\n  Alamat ini BELUM PERNAH bertransaksi via AEGIS (riwayat internal kosong). Ini adalah evaluasi pertama.";
   }
 
   const rejRate = ((memory.totalRejected / memory.totalSeen) * 100).toFixed(0);
@@ -163,15 +163,15 @@ export function formatMemoryForPrompt(memory: AddressMemory): string {
     .join("\n");
 
   const parts: string[] = [
-    "MEMORI HISTORIS AEGIS (konteks dari database keputusan sebelumnya):",
-    "  Total evaluasi            : " + memory.totalSeen + "x",
-    "  Disetujui                 : " + memory.totalApproved + "x",
-    "  Ditolak                   : " + memory.totalRejected + "x (tingkat penolakan: " + rejRate + "%)",
-    "  Avg confidence sebelumnya : " + (memory.avgConfidence * 100).toFixed(1) + "%",
-    "  Risk level dominan        : " + (memory.dominantRiskLevel ?? "tidak ada"),
+    "MEMORI HISTORIS AEGIS (riwayat INTERNAL sistem — BUKAN data on-chain):",
+    "  Transaksi via AEGIS      : " + memory.totalSeen + "x (riwayat DATABASE AEGIS — bukan jumlah transaksi on-chain)",
+    "  Disetujui                : " + memory.totalApproved + "x",
+    "  Ditolak                  : " + memory.totalRejected + "x (tingkat penolakan: " + rejRate + "%)",
+    "  Avg confidence sebelumnya: " + (memory.avgConfidence * 100).toFixed(1) + "%",
+    "  Risk level dominan       : " + (memory.dominantRiskLevel ?? "tidak ada"),
     "  Risk flags pernah terlihat: " + flags,
-    "  Pertama dilihat           : " + (memory.firstSeenAt ?? "-"),
-    "  Terakhir dilihat          : " + (memory.lastSeenAt ?? "-"),
+    "  Pertama dilihat          : " + (memory.firstSeenAt ?? "-"),
+    "  Terakhir dilihat         : " + (memory.lastSeenAt ?? "-"),
     hardWarnLine,
   ];
 
@@ -180,9 +180,27 @@ export function formatMemoryForPrompt(memory: AddressMemory): string {
   }
 
   parts.push(
-    "\nGUNAKAN KONTEKS INI: Jika alamat ini sering ditolak atau pernah terkena hard rule, " +
-    "tingkatkan kewaspadaan dan berikan bobot lebih pada riwayat negatif tersebut."
+    "\nGUNAKAN KONTEKS INI: Sebutkan fakta ini ke user dalam reason — berapa kali akun ini " +
+    "sudah bertransaksi via AEGIS dan berapa kali ditolak. Jika alamat ini sering ditolak " +
+    "atau pernah terkena hard rule, tingkatkan kewaspadaan dan berikan bobot lebih pada " +
+    "riwayat negatif tersebut."
   );
 
   return parts.filter((l) => l !== "").join("\n");
+}
+
+/**
+ * Ringkasan memori SATU BARIS untuk disisipkan sebagai baris "Fakta" pada
+ * reason final yang ditampilkan ke user — dijamin tampil walau LLM lupa
+ * menyebutnya dalam reasoning-nya.
+ */
+export function formatMemoryFacts(memory: AddressMemory): string {
+  if (memory.totalSeen === 0) {
+    return "belum pernah (evaluasi pertama)";
+  }
+  return (
+    memory.totalSeen +
+    "x (disetujui " + memory.totalApproved + "x, ditolak " + memory.totalRejected + "x" +
+    (memory.hadHardRuleReject ? ", pernah kena hard rule" : "") + ")"
+  );
 }

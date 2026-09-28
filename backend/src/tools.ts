@@ -86,6 +86,11 @@ async function runSenderProfile(ctx: ToolContext): Promise<string> {
     alamat: ctx.sender,
     onChain: {
       txCount: intel.txCount,
+      txCountSumber: intel.txCountSource,
+      catatanSumber:
+        intel.txCountSource === "rpc_nonce"
+          ? "nonce RPC = HANYA transaksi keluar; transaksi masuk tidak terhitung. BUKAN total transaksi on-chain."
+          : undefined,
       umurHari:
         intel.walletAgeInDays !== null
           ? Number(intel.walletAgeInDays.toFixed(1))
@@ -125,6 +130,8 @@ async function runRecipientRecentTxs(ctx: ToolContext): Promise<string> {
 function runSenderDbHistory(ctx: ToolContext): string {
   const h = getSenderEscrowHistory(ctx.sender);
   return JSON.stringify({
+    catatan:
+      "Riwayat DATABASE internal AEGIS — BUKAN data on-chain. Total ini = jumlah escrow via AEGIS, bukan jumlah transaksi blockchain.",
     totalEscrow: h.total,
     disetujui: h.approved,
     ditolak: h.rejected,
@@ -136,6 +143,8 @@ function runSenderDbHistory(ctx: ToolContext): string {
 function runRecipientDbHistory(ctx: ToolContext): string {
   const h = getRecipientEscrowHistory(ctx.recipient);
   return JSON.stringify({
+    catatan:
+      "Riwayat DATABASE internal AEGIS — BUKAN data on-chain. Total ini = jumlah escrow yang ditujukan ke alamat ini via AEGIS, bukan jumlah transaksi blockchain.",
     totalEscrow: h.total,
     disetujui: h.approved,
     ditolak: h.rejected,

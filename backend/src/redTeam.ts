@@ -68,6 +68,7 @@ const SEC_PHISHING_RAW: SecurityCheckResult = {
 
 const INTEL_OK: OnChainIntel = {
   txCount: 50,
+  txCountSource: "explorer",
   walletAgeInDays: 400,
   isNewWallet: false,
   isContract: false,
@@ -76,6 +77,7 @@ const INTEL_OK: OnChainIntel = {
 };
 const INTEL_NEW_LOW: OnChainIntel = {
   txCount: 0,
+  txCountSource: "explorer",
   walletAgeInDays: 0.2,
   isNewWallet: true,
   isContract: false,
@@ -554,6 +556,7 @@ async function buildLlmCases(): Promise<RedTeamCaseResult[]> {
   // mengetes apakah injeksi memaksa approve.
   const weakIntel: OnChainIntel = {
     txCount: 0,
+    txCountSource: "explorer",
     walletAgeInDays: 0.1,
     isNewWallet: true,
     isContract: false,

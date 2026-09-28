@@ -122,6 +122,33 @@ export async function warmupOllama(): Promise<void> {
 }
 
 // ── Prompt Builder ────────────────────────────────────────────────────────────
+/**
+ * Baris bukti txCount yang JUJUR terhadap sumber datanya.
+ *
+ * Explorer BscScan V1 sudah mati dan Etherscan V2 untuk chain 97 berbayar,
+ * sehingga angka sering berasal dari nonce RPC = hanya transaksi KELUAR.
+ * Tanpa label ini, model menulis "0 transaksi on-chain" yang menyesatkan
+ * untuk akun penerima murni (yang nonce-nya memang selalu 0).
+ */
+function txCountLine(intel: OnChainIntel): string {
+  if (intel.txCount === null) {
+    return "  Jumlah transaksi : tidak diketahui (explorer & RPC sama-sama gagal)";
+  }
+  if (intel.txCountSource === "explorer") {
+    return `  Jumlah transaksi : ${intel.txCount} (sumber: explorer — mencakup transaksi masuk + keluar)`;
+  }
+  return (
+    `  Transaksi keluar : ${intel.txCount} (sumber: nonce RPC — HANYA transaksi KELUAR; ` +
+    `transaksi masuk TIDAK terhitung karena explorer BscScan tidak tersedia. ` +
+    `Ini BUKAN total transaksi on-chain — akun yang hanya menerima wajar bernilai 0.)`
+  );
+}
+
+/** Aturan penulisan reason terkait sumber txCount — dipakai Investigator/Judge/explanation. */
+const TX_SOURCE_RULE =
+  '- Jika sumber txCount = nonce RPC (transaksi keluar), DILARANG menulis "0 transaksi on-chain" / "tanpa transaksi on-chain" / "belum pernah bertransaksi". ' +
+  'Tulis persis: "belum pernah mengirim transaksi keluar (nonce 0)". Aktivitas riil akun (yang menerima) gunakan angka dari blok MEMORI AEGIS.';
+
 function buildPrompt(input: LLMInput): string {
   const { sender, recipient, amountBNB, security, intel } = input;
 
@@ -136,7 +163,7 @@ function buildPrompt(input: LLMInput): string {
     ? `BscScan On-chain: TIDAK TERSEDIA (anggap sebagai tidak diketahui, BUKAN aman)`
     : [
         `BscScan On-chain (BSC Testnet):`,
-        `  Jumlah transaksi : ${intel.txCount ?? "tidak diketahui"}`,
+        txCountLine(intel),
         `  Umur wallet      : ${intel.walletAgeInDays !== null ? `${intel.walletAgeInDays.toFixed(1)} hari` : "tidak diketahui (explorer tidak menyediakan data usia)"}`,
         `  Wallet baru      : ${intel.isNewWallet ? "ya" : "tidak"}`,
         `  Smart contract   : ${intel.isContract ? "ya" : "tidak"}`,
@@ -165,17 +192,18 @@ ATURAN WAJIB:
 8. Confidence RENDAH jika: GoPlus tidak tersedia, ada sinyal yang bertentangan, atau pola mencurigakan.
 9. Outputmu akan divalidasi. Kembalikan HANYA JSON valid sesuai skema di bawah.
 10. Jika kamu mengisi needsData, gunakan HANYA nama tool dari daftar yang diberikan. Jangan mengarang nama tool.
+11. Blok MEMORI HISTORIS adalah riwayat NYATA dari database AEGIS. Jika angka "Transaksi via AEGIS: N" bernilai N > 0, reason WAJIB menyebut N dan DILARANG menulis "evaluasi pertama" / "belum pernah bertransaksi via AEGIS".
 
 BUKTI:
 Alamat pengirim : ${sender} (profil on-chain pengirim TIDAK TERMASUK dalam bukti)
 Alamat penerima : ${recipient}
 Jumlah transfer : ${amountBNB} BNB
 
+${input.memoryContext ?? "MEMORI HISTORIS AEGIS (riwayat INTERNAL — BUKAN data on-chain):\n  Alamat ini BELUM PERNAH bertransaksi via AEGIS (riwayat internal kosong). Ini adalah evaluasi pertama."}
+
 ${goplusSection}
 
 ${bscscanSection}
-
-${input.memoryContext ?? "MEMORI HISTORIS AEGIS:\n  Alamat ini BELUM PERNAH dilihat sebelumnya. Ini adalah evaluasi pertama."}
 
 ${
   input.followUp
@@ -211,7 +239,7 @@ Kembalikan HANYA objek JSON dengan skema berikut:
   "eligible": true | false,
   "confidence": <angka desimal 0.0 sampai 1.0>,
   "riskLevel": "LOW" | "MEDIUM" | "HIGH" | "CRITICAL",
-  "reason": "<penjelasan dalam Bahasa Indonesia, maksimal 2 kalimat>"
+  "reason": "<penjelasan dalam Bahasa Indonesia, maksimal 3 kalimat>"
 }
 
 Aturan respons:
@@ -227,10 +255,13 @@ Aturan respons:
       : `
  - ATURAN IMPERATIF: jika jumlah transfer >= 1 BNB, needsData WAJIB ["get_sender_profile"] — profil pengirim belum ada di bukti dan transfer besar tidak boleh dinilai tanpa profil pengirim.`
   }
-- reason HARUS menyebut fakta spesifik: jumlah transaksi, jumlah BNB, status GoPlus
-- Contoh reason BAIK: "Alamat penerima memiliki riwayat transaksi normal dan wajar. Jumlah transfer (0.001 BNB) tidak termasuk kategori besar, risiko sangat rendah."
-- Contoh reason BAIK: "Alamat penerima memiliki riwayat transaksi 0 yang mencurigakan. Jumlah transfer besar untuk address baru ini memicu risiko tinggi."
+- reason HARUS menyebut 4 fakta spesifik: (a) jumlah transaksi on-chain akun penerima, (b) riwayat akun di AEGIS dari blok MEMORI — berapa kali akun ini sudah bertransaksi/dievaluasi dan berapa kali ditolak (sebut "belum pernah" bila evaluasi pertama), (c) jumlah BNB, (d) status GoPlus
+- (a) dan (b) adalah angka BERBEDA: (a) dari data BscScan on-chain, (b) dari blok MEMORI database AEGIS. Jangan campur, jangan mengarang — pakai angka persis seperti tertulis di bukti.
+${TX_SOURCE_RULE}
+- Contoh reason BAIK: "Alamat penerima memiliki 3 transaksi on-chain, sudah 2 kali bertransaksi via AEGIS dan semuanya disetujui. Jumlah transfer (0.001 BNB) tidak termasuk kategori besar dan GoPlus BERSIH, risiko sangat rendah."
+- Contoh reason BAIK: "Alamat penerima memiliki 0 transaksi on-chain dan belum pernah bertransaksi via AEGIS (evaluasi pertama). Jumlah transfer besar untuk address baru ini memicu risiko tinggi."
 - Contoh reason BURUK: "Tidak ada sinyal berbahaya ditemukan." (terlalu generik)
+- Contoh reason BURUK (PELANGGARAN): "0 transaksi on-chain dan ini evaluasi pertama" — padahal MEMORI menulis "Transaksi via AEGIS: 15x". Itu mencampur nonce RPC dengan riwayat AEGIS dan mengabaikan bukti.
 - JANGAN bungkus JSON dalam markdown code fence
 - JANGAN tambahkan teks apapun di luar objek JSON`;
 }
@@ -392,8 +423,10 @@ ${toolResults ? `\nDATA TAMBAHAN (hasil tool Investigator):\n${toolResults}\n` :
 ATURAN:
 1. Hanya gunakan bukti yang diberikan — jangan mengarang fakta on-chain.
 2. Argumen harus konkret: sebut jumlah BNB, status GoPlus, umur/tx wallet, memori historis.
-3. Jika posisi yang kamu bela lemah, tetap bangun argumen terbaik yang jujur (tanpa fabrikasi) — inilah gunanya sidang adversarial.
-4. Maksimal 4 poin argumen, Bahasa Indonesia, ringkas.
+3. Blok MEMORI HISTORIS adalah riwayat NYATA dari database AEGIS (bukan data on-chain). Jika "Transaksi via AEGIS: N" > 0, jangan pernah menyebut alamat ini "belum pernah bertransaksi via AEGIS" / "evaluasi pertama".
+${TX_SOURCE_RULE}
+4. Jika posisi yang kamu bela lemah, tetap bangun argumen terbaik yang jujur (tanpa fabrikasi) — inilah gunanya sidang adversarial.
+5. Maksimal 4 poin argumen, Bahasa Indonesia, ringkas.
 
 Kembalikan HANYA JSON:
 {
@@ -478,6 +511,7 @@ ATURAN PENILAIAN:
 3. Testnet: wallet baru/tx rendah itu normal; jangan turunkan confidence hanya karena itu.
 4. GoPlus unavailable ≠ aman; confidence harus turun jika bukti hilang.
 5. Output divalidasi — kembalikan HANYA JSON valid.
+6. Blok MEMORI HISTORIS adalah riwayat NYATA dari database AEGIS. Jika angka "Transaksi via AEGIS: N" bernilai N > 0, reason WAJIB menyebut N dan DILARANG menulis "evaluasi pertama" / "belum pernah bertransaksi via AEGIS".
 
 Kembalikan HANYA objek JSON:
 {
@@ -485,12 +519,15 @@ Kembalikan HANYA objek JSON:
   "eligible": true | false,
   "confidence": <0.0-1.0>,
   "riskLevel": "LOW" | "MEDIUM" | "HIGH" | "CRITICAL",
-  "reason": "<penjelasan Bahasa Indonesia, maksimal 2 kalimat, menyebut fakta spesifik>"
+  "reason": "<penjelasan Bahasa Indonesia, maksimal 3 kalimat, menyebut fakta spesifik>"
 }
 Aturan respons:
 - eligible=true → dana diteruskan; false → dikembalikan ke pengirim.
 - needsData WAJIB [] (tool loop sudah selesai sebelum sidang).
-- reason HARUS menyebut fakta spesifik: jumlah transaksi, jumlah BNB, status GoPlus.
+- reason HARUS menyebut 4 fakta spesifik: (a) jumlah transaksi on-chain akun penerima, (b) riwayat akun di AEGIS dari blok MEMORI — berapa kali akun ini sudah bertransaksi/dievaluasi dan berapa kali ditolak (sebut "belum pernah" bila evaluasi pertama), (c) jumlah BNB, (d) status GoPlus.
+- (a) dan (b) adalah angka BERBEDA: (a) dari data BscScan on-chain, (b) dari blok MEMORI database AEGIS. Jangan campur, jangan mengarang — pakai angka persis seperti tertulis di bukti.
+${TX_SOURCE_RULE}
+- Contoh PELANGGARAN: menulis "0 transaksi on-chain dan evaluasi pertama" padahal MEMORI menulis "Transaksi via AEGIS: 15x".
 - JANGAN bungkus JSON dalam markdown code fence.
 - JANGAN tambahkan teks apapun di luar objek JSON.`;
 }
@@ -510,7 +547,7 @@ function buildEvidenceBlock(input: LLMInput): string {
     ? `BscScan On-chain: TIDAK TERSEDIA (anggap sebagai tidak diketahui, BUKAN aman)`
     : [
         `BscScan On-chain (BSC Testnet):`,
-        `  Jumlah transaksi : ${intel.txCount ?? "tidak diketahui"}`,
+        txCountLine(intel),
         `  Umur wallet      : ${intel.walletAgeInDays !== null ? `${intel.walletAgeInDays.toFixed(1)} hari` : "tidak diketahui (explorer tidak menyediakan data usia)"}`,
         `  Wallet baru      : ${intel.isNewWallet ? "ya" : "tidak"}`,
         `  Smart contract   : ${intel.isContract ? "ya" : "tidak"}`,
@@ -528,11 +565,11 @@ Alamat pengirim : ${sender}
 Alamat penerima : ${recipient}
 Jumlah transfer : ${amountBNB} BNB
 
+${input.memoryContext ?? "MEMORI HISTORIS AEGIS (riwayat INTERNAL — BUKAN data on-chain):\n  Alamat ini BELUM PERNAH bertransaksi via AEGIS (riwayat internal kosong). Ini adalah evaluasi pertama."}
+
 ${goplusSection}
 
-${bscscanSection}
-
-${input.memoryContext ?? "MEMORI HISTORIS AEGIS:\n  Alamat ini BELUM PERNAH dilihat sebelumnya. Ini adalah evaluasi pertama."}`;
+${bscscanSection}`;
 }
 
 // ── JSON Parser (robust) ──────────────────────────────────────────────────────
@@ -621,6 +658,8 @@ export interface ExplanationContext {
   amountBNB: number;
   security: SecurityCheckResult;
   intel: OnChainIntel;
+  /** Teks memori historis AEGIS (agentMemory) — opsional, di-inject ke prompt. */
+  memoryContext?: string;
   /** The deterministic rule that triggered REJECT */
   triggeredRule: string;
   /** Short hardcoded context for LLM (what was detected) */
@@ -659,7 +698,7 @@ export async function generateHardRuleExplanation(
 
       const bscscanSection = intel.unavailable
         ? `BscScan: TIDAK TERSEDIA`
-        : `BscScan: txCount=${intel.txCount ?? "?"}, umur=${intel.walletAgeInDays !== null ? `${intel.walletAgeInDays.toFixed(1)} hari` : "?"}, saldo=${intel.balanceBNB !== null ? `${intel.balanceBNB.toFixed(4)} BNB` : "?"}`;
+        : `BscScan: ${txCountLine(intel).trim()}, umur=${intel.walletAgeInDays !== null ? `${intel.walletAgeInDays.toFixed(1)} hari` : "?"}, saldo=${intel.balanceBNB !== null ? `${intel.balanceBNB.toFixed(4)} BNB` : "?"}`;
 
       const prompt = `Kamu adalah AEGIS AI Oracle. Sistem keamanan kami telah MEMUTUSKAN untuk MENOLAK transfer ini berdasarkan aturan deterministik.
 
@@ -672,11 +711,15 @@ Data transaksi:
 - ${goplusSection}
 - ${bscscanSection}
 
-TUGASMU: Tulis penjelasan dalam Bahasa Indonesia yang jelas, mudah dipahami, dan MENYEBUT FAKTA SPESIFIK (jumlah transaksi, jumlah BNB, status keamanan). Maksimal 2 kalimat.
+${ctx.memoryContext ?? "MEMORI HISTORIS AEGIS (riwayat INTERNAL — BUKAN data on-chain):\n  Alamat ini BELUM PERNAH bertransaksi via AEGIS (riwayat internal kosong). Ini adalah evaluasi pertama."}
+
+TUGASMU: Tulis penjelasan dalam Bahasa Indonesia yang jelas, mudah dipahami, dan MENYEBUT FAKTA SPESIFIK: (a) jumlah transaksi on-chain akun penerima, (b) riwayat akun di AEGIS dari blok MEMORI (berapa kali sudah bertransaksi/dievaluasi, berapa kali ditolak), (c) jumlah BNB, (d) status keamanan. Maksimal 3 kalimat.
+${TX_SOURCE_RULE}
+- Blok MEMORI adalah riwayat NYATA: jika "Transaksi via AEGIS: N" bernilai N > 0, sebut N dan jangan tulis "belum pernah bertransaksi via AEGIS".
 
 Contoh yang BAIK:
-- "Alamat penerima memiliki riwayat transaksi 0 dan menerima transfer 0.05 BNB yang cukup besar, sehingga dana dikembalikan untuk melindungi pengirim."
-- "GoPlus mendeteksi alamat ini sebagai phishing. Dana dikembalikan ke pengirim demi keamanan."
+- "Alamat penerima memiliki 0 transaksi on-chain dan belum pernah bertransaksi via AEGIS, serta menerima transfer 0.05 BNB yang cukup besar, sehingga dana dikembalikan untuk melindungi pengirim."
+- "GoPlus mendeteksi alamat ini sebagai phishing padahal akun sudah 3 kali bertransaksi via AEGIS. Dana dikembalikan ke pengirim demi keamanan."
 
 Kembalikan HANYA string JSON dengan format:
 {"reason": "penjelasan spesifik di sini"}`;
