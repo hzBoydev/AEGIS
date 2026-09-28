@@ -227,6 +227,7 @@ Tool rules:
   * Transfer amount >= 1 BNB → request get_sender_profile. The sender profile is NOT yet in the evidence above, and a large transfer must assess the sender.
   * You are unsure about the recipient's activity pattern → get_recipient_recent_txs.
   * The historical memory shows a negative history you want to confirm → the matching database history tool.
+- How to read a tool result that comes back with "status": "unavailable": the data source could not be reached. Treat the value as UNKNOWN. Never interpret unavailable as "zero", "empty", or "no history", and never lower your confidence because of it. If the recipient pattern is unknown, say so in your reason and judge on the evidence you do have.
 - This is the ONE AND ONLY chance to request data. Once the additional data is given, your Investigator assessment is final (the Advocate/Judge hearing follows).`
 }
 

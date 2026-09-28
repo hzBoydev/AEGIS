@@ -12,8 +12,13 @@ import { API_BASE_URL } from "@/lib/api";
 import { formatDuration } from "@/lib/utils";
 
 export function LiveStatusBadge() {
-  const { connected, finished, awaitingSession } = useDebateStream();
+  const { connected, finished, awaitingSession, sessionEvents } = useDebateStream();
+  const onHold = sessionEvents.some(
+    (e) => e.phase === "human" && e.status !== "done"
+  );
   if (!connected) return <span className="badge badge-danger">Disconnected</span>;
+  if (onHold)
+    return <span className="badge badge-bronze pulse-ring">Waiting For Your Decision</span>;
   if (awaitingSession) return <span className="badge badge-bronze">Awaiting Analysis</span>;
   return finished ? (
     <span className="badge badge-safe">Verification Complete</span>
@@ -188,28 +193,27 @@ export default function LiveDebate({ bare = false, onOpenPopup }: LiveDebateProp
     );
 
   const chips = (
-    <div className="card-foot flex flex-wrap gap-2 items-center">
+    <div className="card-foot stage-track flex flex-wrap items-center gap-x-2 gap-y-2">
       <span className="text-muted text-[11px] font-semibold uppercase tracking-wider mr-1">Stage:</span>
       {PHASE_ORDER.map((phase) => {
         const seen = sessionEvents.filter((e) => e.phase === phase);
         const hasFail = seen.some((e) => e.status === "fail");
         const hasOk = seen.some((e) => e.status === "ok" || e.status === "done");
         const isRunning = seen.some((e) => e.status === "start");
-        const color = hasFail
-          ? "var(--danger)"
-          : isRunning
-          ? "var(--bronze)"
-          : hasOk
-          ? "var(--safe)"
-          : "var(--text-secondary)";
-        const border = hasOk || isRunning || hasFail ? color : "var(--border)";
+        const state = hasFail ? "fail" : isRunning ? "run" : hasOk ? "ok" : "idle";
         return (
           <span
             key={phase}
-            className={`chip ${isRunning ? "pulse-bronze" : ""}`}
-            style={{ borderColor: border, color }}
+            className={`stage-step is-${state}`}
+            aria-current={isRunning ? "step" : undefined}
           >
-            {PHASE_META[phase]?.title ?? phase}
+            <span className="stage-step-body">
+              <span
+                className={`stage-dot ${isRunning ? "is-live" : ""}`}
+                aria-hidden
+              />
+              {PHASE_META[phase]?.title ?? phase}
+            </span>
           </span>
         );
       })}

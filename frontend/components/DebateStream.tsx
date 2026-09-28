@@ -43,8 +43,8 @@ export const PHASE_ORDER = [
   "tools",
   "advocate",
   "judge",
-  "final",
   "human",
+  "final",
 ] as const;
 
 export function statusColor(status: StreamEvent["status"]): string {

@@ -406,21 +406,31 @@ export async function runSecurityPipeline(
       });
 
       const exec = await executeTools(requested, { sender, recipient });
+      const okTools = exec.succeeded.filter((n) => !exec.unavailable.includes(n));
+      const allFailed = exec.failed.length > 0 && exec.succeeded.length === 0;
+      const toolLabels: string[] = [];
+      if (okTools.length > 0) toolLabels.push(`Tool OK: ${okTools.join(", ")}`);
+      if (exec.unavailable.length > 0)
+        toolLabels.push(`Tool unavailable: ${exec.unavailable.join(", ")}`);
+
       console.log(
-        `[Agent]   Tools finished: ${exec.succeeded.length} succeeded, ` +
-        `${exec.failed.length} failed` +
-        (exec.failed.length > 0 ? ` (${exec.failed.join(", ")})` : "")
+        `[Agent]   Tools finished: ${okTools.length} succeeded, ` +
+          `${exec.unavailable.length} unavailable` +
+          (exec.unavailable.length > 0 ? ` (${exec.unavailable.join(", ")})` : "") +
+          `, ${exec.failed.length} failed` +
+          (exec.failed.length > 0 ? ` (${exec.failed.join(", ")})` : "")
       );
       publish({
         escrowId,
         phase: "tools",
-        status: exec.failed.length > 0 && exec.succeeded.length === 0 ? "fail" : "ok",
-        label:
-          exec.succeeded.length > 0
-            ? `Tool OK: ${exec.succeeded.join(", ")}`
-            : "All tools failed",
+        status: allFailed ? "fail" : "ok",
+        label: allFailed ? "All tools failed" : toolLabels.join(" · ") || "Tool calling finished",
         detail: exec.failed.length > 0 ? `failed: ${exec.failed.join(", ")}` : undefined,
-        data: { succeeded: exec.succeeded, failed: exec.failed },
+        data: {
+          succeeded: okTools,
+          unavailable: exec.unavailable,
+          failed: exec.failed,
+        },
       });
 
       if (exec.succeeded.length > 0) {
@@ -478,7 +488,9 @@ export async function runSecurityPipeline(
           });
         }
       } else {
-        console.warn(`[Agent]   All tools failed — using the first-round assessment.`);
+        console.warn(
+          `[Agent]   No usable tool evidence (all requested tools failed) — using the first-round assessment.`
+        );
       }
     }
   }

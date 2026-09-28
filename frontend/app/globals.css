@@ -134,33 +134,6 @@ body {
   opacity: 0.9;
 }
 
-/* ── Logo tile ──────────────────────────────────────────── */
-
-.icon-tile {
-  display: grid;
-  place-items: center;
-  width: 2.5rem;
-  height: 2.5rem;
-  border-radius: 12px;
-  color: var(--bronze);
-  background: linear-gradient(
-    140deg,
-    color-mix(in srgb, var(--bronze) 20%, var(--surface-glass)),
-    color-mix(in srgb, var(--bronze) 8%, color-mix(in srgb, var(--surface) 80%, transparent))
-  );
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  border: 1px solid color-mix(in srgb, var(--bronze) 40%, transparent);
-  box-shadow:
-    0 4px 14px color-mix(in srgb, var(--bronze) 20%, transparent),
-    inset 0 1px 0 rgba(255, 255, 255, 0.7);
-  transition: transform 0.3s ease;
-}
-
-.icon-tile:hover {
-  transform: rotate(6deg) scale(1.06);
-}
-
 /* ── Typography & Accents ──────────────────────────────── */
 
 .eyebrow {
@@ -362,29 +335,100 @@ body {
 
 /* ── Chips & Tags ───────────────────────────────────────── */
 
-.chip {
+/* Stage stepper: arrow segments, only the running one lights up. */
+.stage-track {
+  --notch: 9px;
+}
+
+.stage-step {
+  --stage-tint: var(--border);
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  background: var(--stage-tint);
+  transition: background 0.3s ease, filter 0.3s ease;
+  clip-path: polygon(
+    0 0,
+    calc(100% - var(--notch)) 0,
+    100% 50%,
+    calc(100% - var(--notch)) 100%,
+    0 100%,
+    var(--notch) 50%
+  );
+}
+
+.stage-step:last-child {
+  clip-path: polygon(0 0, 100% 0, 100% 100%, 0 100%, var(--notch) 50%);
+}
+
+.stage-step-body {
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
-  padding: 0.35rem 0.75rem;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  background: var(--surface-glass);
+  padding: 0.34rem 0.7rem 0.34rem 1rem;
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
-  font-size: 0.7rem;
+  font-size: 0.68rem;
   font-weight: 700;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.05em;
   text-transform: uppercase;
-  transition: all 0.25s ease;
+  white-space: nowrap;
+  color: var(--text-secondary);
+  transition: color 0.3s ease, background 0.3s ease;
+  clip-path: polygon(
+    0 0,
+    calc(100% - var(--notch)) 0,
+    100% 50%,
+    calc(100% - var(--notch)) 100%,
+    0 100%,
+    var(--notch) 50%
+  );
 }
 
-.chip::before {
-  content: "";
-  width: 0.4rem;
-  height: 0.4rem;
-  border-radius: 50%;
+.stage-step:last-child .stage-step-body {
+  clip-path: polygon(0 0, 100% 0, 100% 100%, 0 100%, var(--notch) 50%);
+}
+
+.stage-dot {
+  width: 0.34rem;
+  height: 0.34rem;
   background: currentColor;
+}
+
+.stage-step.is-ok {
+  --stage-tint: color-mix(in srgb, var(--safe) 60%, var(--border));
+}
+
+.stage-step.is-ok .stage-step-body {
+  color: var(--safe);
+}
+
+.stage-step.is-fail {
+  --stage-tint: color-mix(in srgb, var(--danger) 60%, var(--border));
+}
+
+.stage-step.is-fail .stage-step-body {
+  color: var(--danger);
+}
+
+.stage-step.is-run {
+  --stage-tint: var(--bronze);
+  filter: drop-shadow(0 0 7px color-mix(in srgb, var(--bronze) 60%, transparent));
+}
+
+.stage-step.is-run .stage-step-body {
+  color: var(--bronze);
+  background: color-mix(in srgb, var(--bronze) 16%, var(--surface));
+}
+
+.stage-dot.is-live {
+  animation: stage-blink 1.5s ease-in-out infinite;
+}
+
+@keyframes stage-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.2; }
 }
 
 .code-chip {
@@ -713,6 +757,83 @@ body {
   background: linear-gradient(to bottom, var(--bronze), color-mix(in srgb, var(--bronze) 50%, transparent));
 }
 
+/* ── Focused decision dialog ─────────────────────────────── */
+
+.decision-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  background: color-mix(in srgb, var(--text-primary) 62%, transparent);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  animation: fade-in 0.25s ease both;
+}
+
+.decision-modal {
+  width: 100%;
+  max-width: 34rem;
+  max-height: min(90vh, 46rem);
+  overflow-y: auto;
+  background: var(--surface-glass-strong);
+  backdrop-filter: saturate(1.6) blur(28px);
+  -webkit-backdrop-filter: saturate(1.6) blur(28px);
+  border: 1px solid color-mix(in srgb, var(--bronze) 45%, var(--border));
+  border-radius: 20px;
+  box-shadow: var(--glass-sheen), 0 40px 80px -18px rgba(43, 38, 32, 0.55),
+    0 0 42px -14px color-mix(in srgb, var(--bronze) 60%, transparent);
+  animation: modal-in 0.35s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.decision-modal::before {
+  content: "";
+  display: block;
+  height: 3px;
+  border-radius: 20px 20px 0 0;
+  background: linear-gradient(
+    90deg,
+    var(--bronze),
+    color-mix(in srgb, var(--bronze) 35%, transparent)
+  );
+}
+
+/* ── Decision confirmation bar ──────────────────────────── */
+
+.hold-panel {
+  background: color-mix(in srgb, var(--bronze) 7%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  max-height: 46vh;
+  overflow-y: auto;
+}
+
+.decision-dock {
+  position: fixed;
+  inset-inline: 0;
+  bottom: max(0.9rem, env(safe-area-inset-bottom));
+  z-index: 70;
+  width: min(52rem, calc(100vw - 1.5rem));
+  margin-inline: auto;
+  animation: dock-in 0.4s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.decision-dock-inner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.8rem 1rem;
+  border-radius: 18px;
+  background: var(--surface-glass-strong);
+  backdrop-filter: saturate(1.7) blur(24px);
+  -webkit-backdrop-filter: saturate(1.7) blur(24px);
+  border: 1px solid color-mix(in srgb, var(--bronze) 32%, var(--border));
+  box-shadow: var(--glass-sheen), 0 24px 50px -18px rgba(43, 38, 32, 0.5);
+}
+
+
 /* ── Modal (popup sidang) ───────────────────────────────── */
 
 .modal-backdrop {
@@ -867,6 +988,11 @@ body {
   border-radius: 50%;
 }
 
+/* Same ring pulse, but keeps the element's own shape (badges, pills). */
+.pulse-ring {
+  animation: pulse-bronze 2s ease-in-out infinite;
+}
+
 @media (scripting: enabled) {
   [data-reveal]:not(.is-in) {
     opacity: 0;
@@ -886,6 +1012,11 @@ body {
   to { opacity: 1; }
 }
 
+@keyframes dock-in {
+  from { opacity: 0; transform: translateY(24px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+
 @keyframes modal-in {
   from { opacity: 0; transform: translateY(20px) scale(0.98); }
   to { opacity: 1; transform: none; }
@@ -895,8 +1026,13 @@ body {
   [data-reveal],
   .pulse,
   .pulse-bronze,
+  .pulse-ring,
+  .stage-dot.is-live,
   .modal-backdrop,
   .modal-panel,
+  .decision-modal-backdrop,
+  .decision-modal,
+  .decision-dock,
   .btn,
   .card,
   .tile {

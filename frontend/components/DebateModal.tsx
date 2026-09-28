@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import LiveDebate, { LiveStatusBadge } from "@/components/LiveDebate";
 import { useDebateStream } from "@/components/DebateStream";
+import { HumanVoteCard, useHumanQueue } from "@/components/HumanQueue";
 
 interface DebateModalProps {
   open: boolean;
@@ -10,7 +11,21 @@ interface DebateModalProps {
 }
 
 export default function DebateModal({ open, onClose }: DebateModalProps) {
-  const { currentId } = useDebateStream();
+  const { currentId, sessionEvents } = useDebateStream();
+  const { items, votingId, vote, error } = useHumanQueue();
+
+  // The pipeline HOLDs at the "human" phase, so the decision belongs right here
+  // instead of behind the dashboard card.
+  const heldItem = useMemo(() => {
+    const hold = [...sessionEvents]
+      .reverse()
+      .find((e) => e.phase === "human" && e.status !== "done");
+    if (hold?.escrowId) {
+      const match = items.find((i) => i.escrow_id === hold.escrowId);
+      if (match) return match;
+    }
+    return items[0] ?? null;
+  }, [sessionEvents, items]);
 
   useEffect(() => {
     if (!open) return;
@@ -58,6 +73,28 @@ export default function DebateModal({ open, onClose }: DebateModalProps) {
             </button>
           </div>
         </div>
+
+        {heldItem && (
+          <div className="card-pad hold-panel">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <p className="eyebrow">Your Decision Is Required</p>
+              <p className="text-muted text-[11px]">
+                The pipeline is paused until you decide
+              </p>
+            </div>
+            {error && (
+              <p className="text-danger mb-3 text-xs font-semibold" role="alert">
+                {error}
+              </p>
+            )}
+            <HumanVoteCard
+              item={heldItem}
+              busy={votingId === heldItem.id}
+              onVote={vote}
+            />
+          </div>
+        )}
+
         <div className="modal-scroll">
           <LiveDebate bare />
         </div>
