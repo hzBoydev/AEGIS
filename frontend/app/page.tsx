@@ -9,7 +9,6 @@ import {
 } from "@/components/DebateStream";
 import Hero from "@/components/Hero";
 import SendForm from "@/components/SendForm";
-import HowItWorks from "@/components/HowItWorks";
 import HumanReview from "@/components/HumanReview";
 import LiveDebate from "@/components/LiveDebate";
 import DebateHistory from "@/components/DebateHistory";
@@ -19,11 +18,10 @@ import AddressFilter from "@/components/AddressFilter";
 import { isValidAddress } from "@/lib/utils";
 
 const NAV = [
-  { id: "kirim-token", label: "Kirim Token" },
-  { id: "sidang-live", label: "Verifikasi Live" },
-  { id: "arsip-sidang", label: "Arsip Verifikasi" },
-  { id: "tata-cara", label: "Cara Kerja" },
-  { id: "riwayat", label: "Riwayat Transaksi" },
+  { id: "kirim-token", label: "Send Token" },
+  { id: "sidang-live", label: "Live Verification" },
+  { id: "arsip-sidang", label: "Verification Archive" },
+  { id: "riwayat", label: "Transaction History" },
 ] as const;
 
 function BrandMark() {
@@ -44,15 +42,15 @@ function DashboardIntro() {
   return (
     <div className="pt-2 pb-1" data-reveal>
       <div className="flex items-center gap-2">
-        <span className="badge badge-safe">Sistem Terkoneksi</span>
+        <span className="badge badge-safe">System Connected</span>
         <span className="text-muted text-xs">BSC Testnet</span>
       </div>
       <h1 className="font-display mt-3 text-3xl leading-tight tracking-tight sm:text-4xl text-ink">
-        Ruang Kendali Transaksi
+        Transaction Control Center
       </h1>
       <p className="text-muted mt-2 max-w-2xl text-sm leading-relaxed">
-        Setiap transfer Anda dilindungi secara otomatis. Dana diamankan di brankas escrow,
-        diverifikasi oleh sistem keamanan berlapis, dan Anda memiliki kuasa penuh untuk membatalkan jika ada indikasi bahaya.
+        Every transfer you make is protected automatically. Funds are secured in an escrow vault,
+        verified by a layered security system, and you hold full power to cancel whenever danger is suspected.
       </p>
     </div>
   );
@@ -63,19 +61,19 @@ function ConnectCard() {
     <section className="card overflow-hidden">
       <div className="card-head">
         <div>
-          <p className="eyebrow">Langkah 01</p>
-          <p className="font-display mt-1 text-xl text-ink">Kirim Token Aman</p>
+          <p className="eyebrow">Step 01</p>
+          <p className="font-display mt-1 text-xl text-ink">Send Token Securely</p>
           <p className="text-muted mt-1 text-xs">
-            Sambungkan dompet Web3 untuk memulai pengiriman dengan proteksi escrow
+            Connect a Web3 wallet to start sending with escrow protection
           </p>
         </div>
         <span className="badge badge-bronze">Escrow Vault</span>
       </div>
       <div className="card-pad flex flex-col items-start gap-4">
         <p className="text-muted text-sm leading-relaxed">
-          Hubungkan dompet Anda ke jaringan BSC Testnet untuk melakukan transfer terlindungi.
+          Connect your wallet to the BSC Testnet network to make protected transfers.
         </p>
-        <ConnectButton />
+        <ConnectButton label="Connect Wallet" />
       </div>
     </section>
   );
@@ -167,7 +165,7 @@ export default function Home() {
 
             <nav
               className="nav-scroll order-3 w-full overflow-x-auto md:order-none md:w-auto md:flex-1"
-              aria-label="Navigasi utama"
+              aria-label="Main navigation"
             >
               <div className="flex items-center gap-1 md:justify-center">
                 {NAV.map((item) => (
@@ -183,7 +181,7 @@ export default function Home() {
             </nav>
 
             <div className="shrink-0 flex items-center gap-2">
-              <ConnectButton />
+              <ConnectButton label="Connect Wallet" />
             </div>
           </div>
         </header>
@@ -216,10 +214,6 @@ export default function Home() {
             <DebateHistory address={activeAddress} />
           </section>
 
-          <section id="tata-cara" className="section-block" data-reveal>
-            <HowItWorks />
-          </section>
-
           <section id="riwayat" className="section-block" data-reveal>
             <AddressFilter
               id="filter-riwayat"
@@ -236,7 +230,7 @@ export default function Home() {
             <div>
               <p className="font-display font-semibold text-sm text-ink">AEGIS — Smart Escrow Guardian</p>
               <p className="text-muted text-xs mt-1">
-                Perlindungan transaksi kripto otomatis dengan verifikasi berlapis dan kendali penuh pengguna.
+                Automatic crypto transaction protection with layered verification and full user control.
               </p>
             </div>
             <div className="text-right">

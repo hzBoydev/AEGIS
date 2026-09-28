@@ -13,12 +13,12 @@ import { formatDuration } from "@/lib/utils";
 
 export function LiveStatusBadge() {
   const { connected, finished, awaitingSession } = useDebateStream();
-  if (!connected) return <span className="badge badge-danger">Terputus</span>;
-  if (awaitingSession) return <span className="badge badge-bronze">Menunggu Analisis</span>;
+  if (!connected) return <span className="badge badge-danger">Disconnected</span>;
+  if (awaitingSession) return <span className="badge badge-bronze">Awaiting Analysis</span>;
   return finished ? (
-    <span className="badge badge-safe">Verifikasi Selesai</span>
+    <span className="badge badge-safe">Verification Complete</span>
   ) : (
-    <span className="badge badge-bronze">Sedang Menganalisis</span>
+    <span className="badge badge-bronze">Analyzing</span>
   );
 }
 
@@ -121,7 +121,7 @@ export default function LiveDebate({ bare = false, onOpenPopup }: LiveDebateProp
     >
       <div>
         <p className="font-semibold text-sm">
-          {isEligible ? "✓ Transaksi Dinyatakan Aman" : "⚠️ Transaksi Memerlukan Perhatian"}
+          {isEligible ? "✓ Transaction Declared Safe" : "⚠️ Transaction Requires Attention"}
         </p>
         <p className="text-xs opacity-90 mt-0.5">{finalEv.label}</p>
         {finalEv.detail && (
@@ -130,7 +130,7 @@ export default function LiveDebate({ bare = false, onOpenPopup }: LiveDebateProp
       </div>
       {typeof finalEv.data?.confidence === "number" && (
         <span className="badge badge-safe self-center">
-          Keyakinan: {Math.round((finalEv.data.confidence as number) * 100)}%
+          Confidence: {Math.round((finalEv.data.confidence as number) * 100)}%
         </span>
       )}
     </div>
@@ -142,13 +142,13 @@ export default function LiveDebate({ bare = false, onOpenPopup }: LiveDebateProp
         <p className="text-muted text-sm leading-relaxed">
           {connected
             ? awaitingSession
-              ? "Transaksi baru terdeteksi — sistem sedang memuat data dan memulai analisis tahapan. Perkembangan akan muncul otomatis di sini."
-              : "Terhubung dengan sistem Aegis. Setiap transaksi baru akan otomatis dianalisis secara berlapis di sini."
-            : sseError ?? `Menghubungkan ke layanan verifikasi (${API_BASE_URL})…`}
+              ? "New transaction detected — the system is loading data and starting the stage-by-stage analysis. Progress will appear here automatically."
+              : "Connected to the Aegis system. Every new transaction will be analysed here layer by layer automatically."
+            : sseError ?? `Connecting to the verification service (${API_BASE_URL})…`}
         </p>
         {sseError && !connected && (
           <p className="text-danger mt-2 text-xs">
-            Layanan backend belum aktif: jalankan <code className="code-chip">cd backend && npm run dev</code>
+            The backend service is not running: start it with <code className="code-chip">cd backend && npm run dev</code>
           </p>
         )}
       </div>
@@ -168,16 +168,16 @@ export default function LiveDebate({ bare = false, onOpenPopup }: LiveDebateProp
         {!finished && sessionEvents.length > 0 && (
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2 pl-28 text-[11px] border-t border-dashed border-[var(--border)] mt-2">
             <span className="text-muted">
-              Waktu berjalan: {formatDuration(sessionElapsedSec)}
+              Elapsed: {formatDuration(sessionElapsedSec)}
             </span>
             {running && last && (
               <>
                 <span className="text-bronze font-medium">
-                  {PHASE_META[last.phase]?.title ?? last.phase} sedang berlangsung · {phaseElapsedSec} dtk
+                  {PHASE_META[last.phase]?.title ?? last.phase} in progress · {phaseElapsedSec}s
                 </span>
                 {slowPhase && (
                   <span className="text-muted">
-                    (Sedang memvalidasi parameter on-chain…)
+                    (Validating on-chain parameters…)
                   </span>
                 )}
               </>
@@ -189,7 +189,7 @@ export default function LiveDebate({ bare = false, onOpenPopup }: LiveDebateProp
 
   const chips = (
     <div className="card-foot flex flex-wrap gap-2 items-center">
-      <span className="text-muted text-[11px] font-semibold uppercase tracking-wider mr-1">Tahap:</span>
+      <span className="text-muted text-[11px] font-semibold uppercase tracking-wider mr-1">Stage:</span>
       {PHASE_ORDER.map((phase) => {
         const seen = sessionEvents.filter((e) => e.phase === phase);
         const hasFail = seen.some((e) => e.status === "fail");
@@ -230,20 +230,20 @@ export default function LiveDebate({ bare = false, onOpenPopup }: LiveDebateProp
     <section className="card overflow-hidden">
       <div className="card-head">
         <div>
-          <p className="eyebrow">Langkah 02</p>
-          <p className="font-display mt-1 text-xl text-ink">Pemantauan Verifikasi Live</p>
+          <p className="eyebrow">Step 02</p>
+          <p className="font-display mt-1 text-xl text-ink">Live Verification Monitor</p>
           {currentId ? (
             <p className="text-muted mt-1 font-mono text-[11px]">
-              ID Escrow: {currentId.slice(0, 16)}…
+              Escrow ID: {currentId.slice(0, 16)}…
             </p>
           ) : (
-            <p className="text-muted mt-1 text-xs">Menunggu transaksi escrow masuk…</p>
+            <p className="text-muted mt-1 text-xs">Waiting for an incoming escrow transaction…</p>
           )}
         </div>
         <div className="flex items-center gap-2">
           {onOpenPopup && (
             <button type="button" className="btn btn-ghost btn-sm" onClick={onOpenPopup}>
-              Buka Layar Penuh
+              Open Full Screen
             </button>
           )}
           {!finished && <span className="pulse-bronze h-2 w-2 rounded-full bg-[var(--bronze)]" />}

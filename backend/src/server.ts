@@ -27,7 +27,7 @@ function intQuery(raw: unknown, fallback: number, min: number, max: number): num
   return Math.max(min, Math.min(max, Math.floor(n)));
 }
 
-/** Query ?address=0x… — null bila tidak ada/kosong (arti: semua data). */
+/** Query ?address=0x… — null when absent/empty (meaning: all data). */
 function addressQuery(raw: unknown): string | null {
   if (typeof raw !== "string") return null;
   const addr = raw.trim();
@@ -48,7 +48,7 @@ app.get("/api/escrows", (req, res) => {
     res.json({ success: true, data: getAllDecisions(limit), total: getDecisionsCount() });
   } catch (err) {
     console.error("Error fetching escrows:", err);
-    res.status(500).json({ success: false, error: "Gagal mengambil data" });
+    res.status(500).json({ success: false, error: "Failed to fetch data" });
   }
 });
 
@@ -56,12 +56,12 @@ app.get("/api/escrow/:id", (req, res) => {
   try {
     const decision = getDecisionByEscrowId(req.params.id);
     if (!decision) {
-      return res.status(404).json({ success: false, error: "Escrow tidak ditemukan" });
+      return res.status(404).json({ success: false, error: "Escrow not found" });
     }
     res.json({ success: true, data: decision });
   } catch (err) {
     console.error("Error fetching escrow:", err);
-    res.status(500).json({ success: false, error: "Gagal mengambil data" });
+    res.status(500).json({ success: false, error: "Failed to fetch data" });
   }
 });
 
@@ -71,18 +71,18 @@ app.get("/api/human/pending", (_req, res) => {
     res.json({ success: true, data: getPendingHumanDecisions() });
   } catch (err) {
     console.error("Error pending human:", err);
-    res.status(500).json({ success: false, error: "Gagal mengambil antrean human review" });
+    res.status(500).json({ success: false, error: "Failed to fetch the human review queue" });
   }
 });
 
-// Body: { approve: boolean } — vote manusia menentukan eligible on-chain final.
+// Body: { approve: boolean } — the human vote determines the final on-chain eligible value.
 app.post("/api/human/vote", async (req, res) => {
   const body = req.body as { escrowId?: string; approve?: unknown };
   const escrowId = body.escrowId;
   if (!escrowId || typeof body.approve !== "boolean") {
     return res.status(400).json({
       success: false,
-      error: "escrowId (string) dan approve (boolean) wajib",
+      error: "escrowId (string) and approve (boolean) are required",
     });
   }
   try {
@@ -105,8 +105,8 @@ app.get("/api/redteam", (_req, res) => {
   res.json({ success: true, data: report });
 });
 
-// Jalankan suite. Mode: ?mode=fast|llm (default fast).
-// LLM mode lambat (Ollama) — response JSON setelah selesai.
+// Run the suite. Mode: ?mode=fast|llm (default fast).
+// LLM mode is slow (Ollama) — JSON response is returned once it finishes.
 app.post("/api/redteam", async (req, res) => {
   const q = (req.query.mode as string | undefined) ?? undefined;
   const bodyMode = (req.body as { mode?: string } | undefined)?.mode;
@@ -124,7 +124,7 @@ app.post("/api/redteam", async (req, res) => {
   }
 });
 
-// ── Arsip sidang (riwayat sesi live per escrow) ───────────────────────────────
+// ── Hearing archive (live session history per escrow) ──────────────────────────
 app.get("/api/debates", (req, res) => {
   try {
     const limit = intQuery(req.query.limit, 20, 1, 100);
@@ -136,7 +136,7 @@ app.get("/api/debates", (req, res) => {
       const addr = address.toLowerCase();
       all = all.filter((s) => {
         if (knownIds.has(s.escrowId)) return true;
-        // Sesi yang belum/saja diproses: cocokkan sender/recipient di event escrow.
+        // Sessions not yet / just processed: match sender/recipient on escrow events.
         return s.events.some((ev) => {
           const d = ev.data;
           if (!d) return false;
@@ -150,7 +150,7 @@ app.get("/api/debates", (req, res) => {
     res.json({ success: true, data: all.slice(0, limit), total: all.length });
   } catch (err) {
     console.error("Error fetching debates:", err);
-    res.status(500).json({ success: false, error: "Gagal mengambil arsip sidang" });
+    res.status(500).json({ success: false, error: "Failed to fetch the hearing archive" });
   }
 });
 
@@ -165,7 +165,7 @@ app.get("/api/stream", (req, res) => {
   });
   res.write("retry: 3000\n\n");
 
-  // Replay buffer agar client yang baru connect tidak kehilangan sesi berjalan.
+  // Replay the buffer so a newly connected client does not miss the running session.
   for (const ev of getRecentEvents()) {
     res.write(`data: ${JSON.stringify(ev)}\n\n`);
   }
@@ -186,7 +186,7 @@ app.get("/api/stream", (req, res) => {
 
 export function startServer(port: number = 3001) {
   app.listen(port, () => {
-    console.log(`🌐 Express API jalan di http://localhost:${port}`);
+    console.log(`🌐 Express API running on http://localhost:${port}`);
     console.log(`📡 SSE stream: http://localhost:${port}/api/stream`);
   });
 }

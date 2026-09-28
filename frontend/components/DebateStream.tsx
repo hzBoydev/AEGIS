@@ -25,14 +25,14 @@ export interface StreamEvent {
 
 export const PHASE_META: Record<StreamEvent["phase"], { title: string; tint: string }> = {
   escrow: { title: "Escrow", tint: "var(--bronze)" },
-  evidence: { title: "Bukti", tint: "var(--bronze)" },
-  rules: { title: "Aturan", tint: "var(--bronze)" },
-  investigator: { title: "Investigasi", tint: "var(--text-primary)" },
+  evidence: { title: "Evidence", tint: "var(--bronze)" },
+  rules: { title: "Rules", tint: "var(--bronze)" },
+  investigator: { title: "Investigation", tint: "var(--text-primary)" },
   tools: { title: "Tool Calling", tint: "var(--text-primary)" },
-  advocate: { title: "Advokasi", tint: "var(--text-secondary)" },
-  judge: { title: "Putusan", tint: "var(--safe)" },
-  final: { title: "Hasil Akhir", tint: "var(--text-primary)" },
-  human: { title: "Tinjauan Manual", tint: "var(--bronze)" },
+  advocate: { title: "Advocacy", tint: "var(--text-secondary)" },
+  judge: { title: "Verdict", tint: "var(--safe)" },
+  final: { title: "Final Result", tint: "var(--text-primary)" },
+  human: { title: "Manual Review", tint: "var(--bronze)" },
 };
 
 export const PHASE_ORDER = [
@@ -109,7 +109,7 @@ export function DebateStreamProvider({
     };
     source.onerror = () => {
       setConnected(false);
-      setSseError("Koneksi live terputus — mencoba menyambung ulang otomatis…");
+      setSseError("Live connection lost — trying to reconnect automatically…");
     };
 
     source.onmessage = (msg) => {
@@ -163,7 +163,7 @@ export function DebateStreamProvider({
 export function useDebateStream(): DebateContextValue {
   const ctx = useContext(DebateContext);
   if (!ctx) {
-    throw new Error("useDebateStream harus dipakai di dalam <DebateStreamProvider>");
+    throw new Error("useDebateStream must be used inside <DebateStreamProvider>");
   }
   return ctx;
 }

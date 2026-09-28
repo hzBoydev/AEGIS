@@ -18,13 +18,13 @@ const contractAddress = config.CONTRACT_ADDRESS;
 // the same escrow within the same session.
 const processingOrDone = new Set<string>();
 
-// Escrow yang ditunda karena kontrak pause — dipakai supaya tidak spam notifikasi.
+// Escrows deferred because the contract is paused — used to avoid spamming notifications.
 const pausedDeferred = new Set<string>();
 
 // ── Shared: submit fulfillVerification on-chain ───────────────────────────────
 /**
- * Potong `reason` agar tetap dalam batas kontrak (MAX_REASON_BYTES).
- * Dipotong di batas code point UTF-8 supaya tidak menghasilkan byte parsial.
+ * Truncate `reason` so it stays within the contract limit (MAX_REASON_BYTES).
+ * Truncated on a UTF-8 code point boundary so no partial bytes are produced.
  */
 function truncateReason(reason: string, maxBytes: number): string {
   if (Buffer.byteLength(reason, "utf8") <= maxBytes) return reason;
@@ -62,8 +62,8 @@ export async function submitFulfillment(
   const safeReason = truncateReason(reason, maxBytes);
   if (safeReason !== reason) {
     console.warn(
-      `   ⚠️ Alasan dipotong ${Buffer.byteLength(reason, "utf8") - Buffer.byteLength(safeReason, "utf8")} B` +
-        ` (batas on-chain: ${maxBytes} B)`
+      `   ⚠️ Reason truncated by ${Buffer.byteLength(reason, "utf8") - Buffer.byteLength(safeReason, "utf8")} B` +
+        ` (on-chain limit: ${maxBytes} B)`
     );
   }
 
@@ -81,11 +81,11 @@ export async function submitFulfillment(
     console.log(`   ✅ Confirmed on-chain.`);
     return txHash;
   } catch (err) {
-    // Contract revert EscrowTimeout: escrow sudah lewat ESCROW_TIMEOUT dan
-    // sudah (atau sedang) diklaim sender via claimExpired().
+    // Contract revert EscrowTimeout: the escrow is past ESCROW_TIMEOUT and has
+    // already been (or is being) claimed by the sender via claimExpired().
     if (isEscrowTimeoutError(err)) {
       throw new Error(
-        `Escrow sudah kedaluwarsa (melewati ESCROW_TIMEOUT) — dana sudah/akan dikembalikan ke sender via claimExpired().`
+        `Escrow has expired (past ESCROW_TIMEOUT) — the funds have been / will be returned to the sender via claimExpired().`
       );
     }
     throw err;
@@ -102,7 +102,7 @@ function isEscrowTimeoutError(err: unknown): boolean {
   );
 }
 
-// ── Shared: klaim escrow kedaluwarsa → dana kembali ke sender ────────────────
+// ── Shared: claim an expired escrow → funds returned to the sender ─────────
 export async function submitExpiredClaim(
   escrowId: `0x${string}`
 ): Promise<string> {
@@ -115,7 +115,7 @@ export async function submitExpiredClaim(
     account,
   });
   await publicClient.waitForTransactionReceipt({ hash: txHash });
-  console.log(`   ⏳ Escrow expired — dana dikembalikan ke sender: ${txHash}`);
+  console.log(`   ⏳ Escrow expired — funds returned to the sender: ${txHash}`);
   return txHash;
 }
 
@@ -128,11 +128,11 @@ async function isEscrowExpired(escrowId: `0x${string}`): Promise<boolean> {
       args: [escrowId],
     })) as boolean;
   } catch {
-    return false; // kontrak lama tanpa fitur expiry
+    return false; // legacy contract without the expiry feature
   }
 }
 
-/** True saat owner menyalakan pause darurat (submit/fulfill diblokir). */
+/** True when the owner has enabled the emergency pause (submit/fulfill blocked). */
 async function isContractPaused(): Promise<boolean> {
   try {
     return (await publicClient.readContract({
@@ -141,12 +141,12 @@ async function isContractPaused(): Promise<boolean> {
       functionName: "paused",
     })) as boolean;
   } catch {
-    return false; // kontrak lama tanpa fitur pause
+    return false; // legacy contract without the pause feature
   }
 }
 
-// ── Shared: ESCROW_TIMEOUT dari kontrak (cached) ─────────────────────────────
-// Null = kontrak lama (belum punya ESCROW_TIMEOUT) → jangan asumsikan expiry.
+// ── Shared: ESCROW_TIMEOUT from the contract (cached) ──────────────────────────
+// Null = legacy contract (no ESCROW_TIMEOUT) → do not assume expiry.
 let escrowTimeoutSecCache: number | null | undefined;
 
 async function readEscrowTimeoutSec(): Promise<number | null> {
@@ -161,7 +161,7 @@ async function readEscrowTimeoutSec(): Promise<number | null> {
     console.log(`⏳ [Escrow] ESCROW_TIMEOUT = ${escrowTimeoutSecCache}s`);
   } catch {
     console.warn(
-      `⏳ [Escrow] Kontrak tidak punya ESCROW_TIMEOUT (build lama?) — fitur expiry dinonaktifkan.`
+      `⏳ [Escrow] The contract has no ESCROW_TIMEOUT (older build?) — the expiry feature is disabled.`
     );
     escrowTimeoutSecCache = null;
   }
@@ -178,7 +178,7 @@ async function processEscrow(
     return;
   }
 
-  // Sudah ada di DB (final / pending_human) — jangan proses ulang setelah restart.
+  // Already in the DB (final / pending_human) — do not reprocess after a restart.
   const existing = getDecisionByEscrowId(escrowId) as
     | { status?: string; tx_hash?: string | null }
     | undefined;
@@ -195,23 +195,23 @@ async function processEscrow(
   console.log(`\n>> [${trigger.toUpperCase()}] Processing escrow: ${escrowId}`);
 
   try {
-    // ── Guard: kontrak sedang PAUSED (mode darurat) ───────────────────────────
-    // Jangan buang panggilan LLM — tx fulfillVerification pasti revert.
-    // Hapus dari processingOrDone supaya fallback poll mengulang setelah unpause.
+    // ── Guard: the contract is PAUSED (emergency mode) ────────────────────────
+    // Do not waste the LLM call — the fulfillVerification tx would revert anyway.
+    // Remove from processingOrDone so the fallback poll retries after unpause.
     if (await isContractPaused()) {
       processingOrDone.delete(escrowId);
       if (!pausedDeferred.has(escrowId)) {
         pausedDeferred.add(escrowId);
         console.log(
-          `[${trigger.toUpperCase()}] Tunda: kontrak sedang pause (mode darurat).`
+          `[${trigger.toUpperCase()}] Deferred: the contract is paused (emergency mode).`
         );
         publish({
           escrowId,
           phase: "escrow",
           status: "fail",
-          label: "Kontrak di-pause",
+          label: "Contract is paused",
           detail:
-            "Keputusan ditunda sampai unpause — user bisa emergencyWithdraw selama pause.",
+            "The decision is deferred until unpause — users can emergencyWithdraw while paused.",
           data: { paused: true },
         });
       }
@@ -228,11 +228,11 @@ async function processEscrow(
     }) as readonly [string, string, bigint, number, bigint];
     const [sender, recipient, amount, status, createdAt] = escrowData;
 
-    // ── Guard: escrow sudah final / kadaluwarsa di kontrak ────────────────────
+    // ── Guard: the escrow is already final / expired on-chain ─────────────────
     // Status: 0 PENDING, 1 COMPLETED, 2 REVERTED, 3 EXPIRED
     if (Number(status) !== 0) {
       console.log(
-        `[${trigger.toUpperCase()}] Skip: escrow sudah final on-chain (status=${status}).`
+        `[${trigger.toUpperCase()}] Skip: the escrow is already final on-chain (status=${status}).`
       );
       processingOrDone.add(escrowId);
       return;
@@ -244,14 +244,14 @@ async function processEscrow(
       Math.floor(Date.now() / 1000) >= Number(createdAt) + timeoutSec
     ) {
       console.log(
-        `[${trigger.toUpperCase()}] Escrow kedaluwarsa — auto-claim dana kembali ke sender.`
+        `[${trigger.toUpperCase()}] Escrow expired — auto-claiming the funds back to the sender.`
       );
       let claimTx: string | undefined;
       try {
         claimTx = await submitExpiredClaim(escrowId);
       } catch (err) {
         console.warn(
-          `   ⚠️ Auto-claimExpired gagal:`,
+          `   ⚠️ Auto-claimExpired failed:`,
           err instanceof Error ? err.message : err
         );
       }
@@ -259,10 +259,10 @@ async function processEscrow(
         escrowId,
         phase: "escrow",
         status: "fail",
-        label: "Escrow kedaluwarsa",
+        label: "Escrow expired",
         detail: claimTx
-          ? `Melewati ESCROW_TIMEOUT — dana dikembalikan ke sender. ${claimTx}`
-          : "Melewati ESCROW_TIMEOUT — dana bisa diklaim kembali oleh sender.",
+          ? `Past ESCROW_TIMEOUT — funds returned to the sender. ${claimTx}`
+          : "Past ESCROW_TIMEOUT — the funds can be claimed back by the sender.",
         data: { ...(claimTx ? { claimTx } : {}), expired: true },
       });
       processingOrDone.add(escrowId);
@@ -271,7 +271,7 @@ async function processEscrow(
 
     const amountBNB = Number(formatEther(amount));
 
-    // Double-check setelah await pertama: poller restart bisa overlap.
+    // Double-check after the first await: a poller restart may overlap.
     const midFlight = getDecisionByEscrowId(escrowId) as
       | { status?: string; tx_hash?: string | null }
       | undefined;
@@ -289,8 +289,8 @@ async function processEscrow(
       escrowId,
       phase: "escrow",
       status: "start",
-      label: `Escrow baru ${amountBNB} BNB`,
-      detail: `dari ${sender} → ${recipient}`,
+      label: `New escrow ${amountBNB} BNB`,
+      detail: `from ${sender} → ${recipient}`,
       data: { sender, recipient, amountBNB },
     });
 
@@ -302,7 +302,7 @@ async function processEscrow(
         (decision.needsHuman ? " needsHuman=true" : "")
     );
 
-    // ── Human-in-the-loop: HOLD — jangan submit on-chain ──────────────────────
+    // ── Human-in-the-loop: HOLD — do NOT submit on-chain ──────────────────────
     if (decision.needsHuman) {
       saveDecision({
         escrowId,
@@ -322,8 +322,8 @@ async function processEscrow(
           ? { humanReason: decision.humanReason }
           : {}),
       });
-      console.log(`   ⏸ Held for human review (belum on-chain).\n`);
-      // processingOrDone tetap diisi — poller tidak boleh proses ulang sampai vote.
+      console.log(`   ⏸ Held for human review (not on-chain yet).\n`);
+      // processingOrDone stays filled — the poller must not reprocess until the vote.
       return;
     }
 
@@ -353,7 +353,7 @@ async function processEscrow(
       escrowId,
       phase: "escrow",
       status: "done",
-      label: "On-chain terkonfirmasi",
+      label: "Confirmed on-chain",
       detail: txHash,
       data: { txHash },
     });
@@ -366,14 +366,14 @@ async function processEscrow(
       escrowId,
       phase: "escrow",
       status: "fail",
-      label: "Pemrosesan escrow gagal",
+      label: "Escrow processing failed",
       detail: err instanceof Error ? err.message : String(err),
     });
     // Keep in processingOrDone to prevent infinite retry loop
   }
 }
 
-// ── Vote manusia: finalisasi pending_human → on-chain ────────────────────────
+// ── Human vote: finalize pending_human → on-chain ───────────────────────────
 export async function applyHumanVote(
   escrowId: string,
   approve: boolean
@@ -381,19 +381,19 @@ export async function applyHumanVote(
   const { getPendingHumanByEscrowId } = await import("./db.js");
   const row = getPendingHumanByEscrowId(escrowId);
   if (!row) {
-    throw new Error("Tidak ada escrow pending human untuk id ini");
+    throw new Error("No pending human escrow for this id");
   }
 
   const aiRec = row.eligible === 1 ? "RELEASE" : "REJECT";
   const voteLabel = approve ? "RELEASE" : "REJECT";
 
-  // ── Escrow sudah lewat ESCROW_TIMEOUT → vote tidak bisa masuk on-chain ─────
-  // Kembalikan dana ke sender via claimExpired() supaya vote tetap "beres".
+  // ── The escrow is past ESCROW_TIMEOUT → the vote cannot land on-chain ───────
+  // Return the funds to the sender via claimExpired() so the vote is still "closed out".
   if (await isEscrowExpired(escrowId as `0x${string}`)) {
     const claimTx = await submitExpiredClaim(escrowId as `0x${string}`);
     const expiredReason =
-      `Escrow kedaluwarsa (melewati ESCROW_TIMEOUT) — dana dikembalikan ke sender. ` +
-      `Vote manusia "${voteLabel}" tidak dieksekusi on-chain.`;
+      `The escrow has expired (past ESCROW_TIMEOUT) — funds are returned to the sender. ` +
+      `The human vote "${voteLabel}" was not executed on-chain.`;
 
     const ok = finalizeHumanDecision({
       escrowId,
@@ -404,14 +404,14 @@ export async function applyHumanVote(
       txHash: claimTx,
     });
     if (!ok) {
-      throw new Error("Gagal update DB setelah claimExpired (mungkin sudah difinalisasi)");
+      throw new Error("Failed to update the DB after claimExpired (it may already be finalized)");
     }
 
     publish({
       escrowId,
       phase: "human",
       status: "fail",
-      label: "Escrow kedaluwarsa — vote tidak berlaku",
+      label: "Escrow expired — the vote does not apply",
       detail: expiredReason,
       data: { humanVote: approve, claimTx },
     });
@@ -419,7 +419,7 @@ export async function applyHumanVote(
       escrowId,
       phase: "final",
       status: "done",
-      label: "DIKEMBALIKAN (escrow expired)",
+      label: "RETURNED (escrow expired)",
       detail: expiredReason,
       data: { eligible: false, decidedBy: "expired", claimTx },
     });
@@ -428,9 +428,9 @@ export async function applyHumanVote(
   }
 
   const finalReason =
-    `Keputusan manusia: ${voteLabel}. ` +
-    `Rekomendasi AI: ${aiRec} (confidence ${(row.confidence * 100).toFixed(0)}%). ` +
-    (row.human_reason ? `Alasan hold: ${row.human_reason} ` : "") +
+    `Human decision: ${voteLabel}. ` +
+    `AI recommendation: ${aiRec} (confidence ${(row.confidence * 100).toFixed(0)}%). ` +
+    (row.human_reason ? `Hold reason: ${row.human_reason} ` : "") +
     row.reasoning;
 
   const txHash = await submitFulfillment(
@@ -448,14 +448,14 @@ export async function applyHumanVote(
     txHash,
   });
   if (!ok) {
-    throw new Error("Gagal update DB setelah vote (mungkin sudah difinalisasi)");
+    throw new Error("Failed to update the DB after the vote (it may already be finalized)");
   }
 
   publish({
     escrowId,
     phase: "human",
     status: "done",
-    label: approve ? "Veto manusia: SETUJUI" : "Veto manusia: TOLAK",
+    label: approve ? "Human veto: APPROVE" : "Human veto: REJECT",
     detail: finalReason,
     data: { humanVote: approve, txHash, aiRecommendation: row.eligible === 1 },
   });
@@ -463,7 +463,7 @@ export async function applyHumanVote(
     escrowId,
     phase: "final",
     status: "done",
-    label: approve ? "DITERUSKAN (manusia)" : "DIKEMBALIKAN (manusia)",
+    label: approve ? "RELEASED (human)" : "RETURNED (human)",
     detail: finalReason,
     data: {
       eligible: approve,
@@ -476,7 +476,7 @@ export async function applyHumanVote(
     escrowId,
     phase: "escrow",
     status: "done",
-    label: "On-chain terkonfirmasi (human vote)",
+    label: "Confirmed on-chain (human vote)",
     detail: txHash,
     data: { txHash },
   });
@@ -614,7 +614,7 @@ function startEventListener(): () => void {
             const args = (log as unknown as { args: { escrowId?: `0x${string}`; sender?: string; recipient?: string; amount?: bigint } }).args;
             const escrowId = args?.escrowId;
             if (!escrowId) {
-              console.warn(`[Event]  Received EscrowCreated log with missing escrowId — skipping.`);
+              console.warn(`[Event]  Received an EscrowCreated log with a missing escrowId — skipping.`);
               continue;
             }
             const sender = args?.sender ?? "unknown";
@@ -725,7 +725,7 @@ export function startEventDrivenOracle() {
   );
   console.log(`   Fallback poll   : every ${config.POLLING_INTERVAL_MS}ms (safety net)\n`);
 
-  // 0. Warmup: load model LLM ke VRAM sebelum escrow pertama (anti cold-load timeout)
+  // 0. Warmup: load the LLM model into VRAM before the first escrow (avoids cold-load timeouts)
   void warmupOllama();
 
   // 1. Start real-time event listener (primary mechanism)

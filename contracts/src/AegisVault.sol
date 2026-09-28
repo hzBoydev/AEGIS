@@ -4,8 +4,8 @@ pragma solidity ^0.8.20;
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /// @title AegisVault
-/// @notice Escrow contract yang menahan Native BNB sementara sampai
-///         AI Oracle (off-chain) memverifikasi keamanan transaksi.
+/// @notice Escrow contract that holds Native BNB temporarily until
+///         the AI Oracle (off-chain) verifies the transaction security.
 contract AegisVault is ReentrancyGuard {
     enum Status {
         PENDING,
@@ -16,20 +16,20 @@ contract AegisVault is ReentrancyGuard {
     }
 
     /**
-     * @notice Batas waktu escrow ditahan sebelum bisa diklaim kembali oleh sender.
-     *         Fail-safe: kalau oracle off-chain mati/ tidak merespons, dana tidak
+     * @notice How long escrows are held before the sender can reclaim the funds.
+     *         Fail-safe: if the off-chain oracle dies or stops responding, the funds are not
      *         stuck selamanya.
      */
     uint256 public constant ESCROW_TIMEOUT = 2 hours;
 
     /**
-     * @notice Jeda minimum sebelum pergantian oracle bisa di-accept.
-     *         Jendela transparansi: pengguna punya waktu keluar sebelum
-     *         oracle baru aktif.
+     * @notice Minimum delay before an oracle change can be accepted.
+     *         Transparency window: users have time to exit before the
+     *         new oracle goes live.
      */
     uint256 public constant ORACLE_CHANGE_DELAY = 24 hours;
 
-    /** @notice Batas ukuran `reason` on-chain (bytes UTF-8). */
+    /** @notice On-chain size limit for `reason` (UTF-8 bytes). */
     uint256 public constant MAX_REASON_BYTES = 1024;
 
     struct Escrow {
@@ -44,12 +44,12 @@ contract AegisVault is ReentrancyGuard {
     address public oracle;
     address public owner;
 
-    /// @notice Kandidat oracle hasil proposeOwner — aktif setelah ORACLE_CHANGE_DELAY.
+    /// @notice Oracle candidate from proposeOwner — becomes active after ORACLE_CHANGE_DELAY.
     address public pendingOracle;
     uint256 public oracleChangeReadyAt;
 
-    /// @notice Saat true: escrow baru tidak diterima & oracle tidak bisa memutuskan,
-    ///         tapi user tetap boleh mengambil dananya (emergency exit).
+    /// @notice When true: new escrows are not accepted and the oracle cannot decide,
+    ///         but users may still withdraw their funds (emergency exit).
     bool public paused;
 
     mapping(bytes32 => Escrow) private escrows;
@@ -110,7 +110,7 @@ contract AegisVault is ReentrancyGuard {
     }
 
     constructor(address _oracle) {
-        require(_oracle != address(0), "Oracle address tidak valid");
+        require(_oracle != address(0), "Oracle address is not valid");
         oracle = _oracle;
         owner = msg.sender;
     }
@@ -173,7 +173,7 @@ contract AegisVault is ReentrancyGuard {
         Escrow storage e = escrows[escrowId];
         if (e.sender == address(0)) revert EscrowNotFound();
         if (e.status != Status.PENDING) revert EscrowNotPending();
-        // Lewat batas waktu → hanya sender yang boleh mengambil via claimExpired.
+        // Past the time limit → only the sender may claim via claimExpired.
         if (block.timestamp >= e.createdAt + ESCROW_TIMEOUT) revert EscrowTimeout();
         if (bytes(reason).length > MAX_REASON_BYTES) revert ReasonTooLong();
 
@@ -203,14 +203,14 @@ contract AegisVault is ReentrancyGuard {
         return (e.status, e.reason);
     }
 
-    /// @notice Waktu kedaluwarsa escrow (createdAt + ESCROW_TIMEOUT).
+    /// @notice Escrow expiry time (createdAt + ESCROW_TIMEOUT).
     function expiresAt(bytes32 escrowId) external view returns (uint256) {
         Escrow memory e = escrows[escrowId];
         if (e.sender == address(0)) revert EscrowNotFound();
         return e.createdAt + ESCROW_TIMEOUT;
     }
 
-    /// @notice True jika escrow masih PENDING dan sudah lewat ESCROW_TIMEOUT.
+    /// @notice True if the escrow is still PENDING and ESCROW_TIMEOUT has passed.
     function isExpired(bytes32 escrowId) external view returns (bool) {
         Escrow memory e = escrows[escrowId];
         if (e.sender == address(0)) revert EscrowNotFound();
@@ -220,9 +220,9 @@ contract AegisVault is ReentrancyGuard {
     }
 
     /**
-     * @notice Klaim dana escrow yang kedaluwarsa. Permissionless — dana selalu
-     *         dikembalikan ke sender, jadi siapa pun boleh mengeksekusi untuk
-     *         menjaga liveness (anti stuck dana).
+     * @notice Claim the funds of an expired escrow. Permissionless — the funds always
+     *         go back to the sender, so anyone may execute this to
+     *         preserve liveness (no stuck funds).
      */
     function claimExpired(bytes32 escrowId) external nonReentrant {
         Escrow storage e = escrows[escrowId];
@@ -235,7 +235,7 @@ contract AegisVault is ReentrancyGuard {
         address sender = e.sender;
         uint256 amount = e.amount;
         e.status = Status.EXPIRED;
-        e.reason = "Escrow kedaluwarsa: oracle tidak merespons dalam batas waktu";
+        e.reason = "Escrow expired: oracle did not respond within the time limit";
 
         (bool ok, ) = payable(sender).call{value: amount}("");
         if (!ok) revert TransferFailed();
@@ -244,10 +244,10 @@ contract AegisVault is ReentrancyGuard {
     }
 
     /**
-     * @notice Emergency withdrawal: hanya berlaku saat kontrak dalam keadaan
-     *         PAUSED (oracle bermasalah / rotasi sedang berlangsung).
-     *         Sender bisa mengambil dananya kembali tanpa menunggu ESCROW_TIMEOUT.
-     * @dev    Dana selalu kembali ke sender — owner tidak bisa mengambil dana user.
+     * @notice Emergency withdrawal: only applies while the contract is
+     *         PAUSED (broken oracle / rotation in progress).
+     *         The sender can reclaim their funds without waiting for ESCROW_TIMEOUT.
+     * @dev    Funds always return to the sender — the owner can never take user funds.
      */
     function emergencyWithdraw(bytes32 escrowId) external nonReentrant {
         if (!paused) revert ContractIsPaused();
@@ -262,7 +262,7 @@ contract AegisVault is ReentrancyGuard {
         address sender = e.sender;
         uint256 amount = e.amount;
         e.status = Status.CANCELLED;
-        e.reason = "Emergency withdrawal: kontrak dalam masa pause";
+        e.reason = "Emergency withdrawal: contract is paused";
 
         (bool ok, ) = payable(sender).call{value: amount}("");
         if (!ok) revert TransferFailed();
@@ -283,10 +283,10 @@ contract AegisVault is ReentrancyGuard {
     }
 
     // ── Oracle rotation: two-step + timelock ───────────────────────────────────
-    // Owner TIDAK BISA langsung mengganti oracle — ada jeda 24 jam dan wajib
-    // di-accept oleh address oracle baru itu sendiri (Ownable2Step-style).
-    // Ini menutup SPOF: key oracle bisa dirotasi tanpa risiko owner mengambil
-    // alih peran oracle secara diam-diam.
+    // The owner CANNOT swap the oracle directly — there is a 24 hour delay and it must
+    // be accepted by the new oracle address itself (Ownable2Step-style).
+    // This closes the SPOF: the oracle key can be rotated with no risk of the owner
+    // silently taking over the oracle role.
 
     function proposeOracle(address newOracle) external onlyOwner {
         if (newOracle == address(0)) revert InvalidRecipient();
@@ -304,7 +304,7 @@ contract AegisVault is ReentrancyGuard {
         emit OracleProposalCancelled(cancelled);
     }
 
-    /// @notice Dipanggil oleh address hasil propose, setelah jeda tercapai.
+    /// @notice Called by the proposed address, once the delay has elapsed.
     function acceptOracle() external {
         if (msg.sender != pendingOracle) revert NotPendingOracle();
         if (block.timestamp < oracleChangeReadyAt) revert OracleDelayNotElapsed();

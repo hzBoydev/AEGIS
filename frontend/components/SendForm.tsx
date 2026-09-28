@@ -44,10 +44,10 @@ export default function SendForm({ onSubmitted }: SendFormProps) {
     <section className="card overflow-hidden">
       <div className="card-head">
         <div>
-          <p className="eyebrow">Langkah 01</p>
-          <p className="font-display mt-1 text-xl text-ink">Kirim Token Aman</p>
+          <p className="eyebrow">Step 01</p>
+          <p className="font-display mt-1 text-xl text-ink">Send Token Securely</p>
           <p className="text-muted mt-1 text-xs">
-            Dana masuk ke brankas penampung (Escrow) sebelum diverifikasi
+            Funds land in the holding vault (Escrow) before verification
           </p>
         </div>
         <span className="badge badge-bronze">Escrow Vault</span>
@@ -56,13 +56,13 @@ export default function SendForm({ onSubmitted }: SendFormProps) {
       <form onSubmit={handleSubmit} className="card-pad flex flex-col gap-5">
         <div>
           <label htmlFor="recipient" className="field-label flex items-center justify-between">
-            <span>Alamat Dompet Penerima</span>
+            <span>Recipient Wallet Address</span>
             <span className="text-muted text-[11px] font-normal">Format: 0x... (BSC Testnet)</span>
           </label>
           <input
             id="recipient"
             type="text"
-            placeholder="Masukkan alamat dompet (0x...)"
+            placeholder="Enter wallet address (0x...)"
             value={recipient}
             onChange={(e) => setRecipient(e.target.value)}
             className="field font-mono text-xs sm:text-sm"
@@ -75,7 +75,7 @@ export default function SendForm({ onSubmitted }: SendFormProps) {
         <div>
           <div className="flex items-center justify-between mb-2">
             <label htmlFor="amount" className="field-label mb-0">
-              Jumlah Transfer (BNB)
+              Transfer Amount (BNB)
             </label>
             <div className="flex items-center gap-1.5">
               {PRESET_AMOUNTS.map((p) => (
@@ -96,7 +96,7 @@ export default function SendForm({ onSubmitted }: SendFormProps) {
             id="amount"
             type="text"
             inputMode="decimal"
-            placeholder="Contoh: 0.001"
+            placeholder="Example: 0.001"
             value={amount}
             onChange={(e) => setAmount(e.target.value)}
             className="field"
@@ -107,14 +107,14 @@ export default function SendForm({ onSubmitted }: SendFormProps) {
         <div className="flex flex-col gap-3 pt-1">
           <button type="submit" disabled={isPending || isConfirming} className="btn btn-bronze w-full">
             {isPending
-              ? "Menunggu Konfirmasi di Wallet…"
+              ? "Waiting for Wallet Confirmation…"
               : isConfirming
-              ? "Memproses Transaksi di Jaringan…"
-              : "Kirim dengan Proteksi Aegis"}
+              ? "Processing Transaction on Network…"
+              : "Send with Aegis Protection"}
           </button>
           <div className="flex items-center justify-between text-muted text-[11px]">
-            <span>🛡️ Dana aman di escrow hingga diverifikasi</span>
-            <span>Jaringan: BSC Testnet</span>
+            <span>🛡️ Funds stay safe in escrow until verified</span>
+            <span>Network: BSC Testnet</span>
           </div>
         </div>
 
@@ -124,7 +124,7 @@ export default function SendForm({ onSubmitted }: SendFormProps) {
             <div>
               <p className="font-semibold">{error.message.split("\n")[0]}</p>
               <p className="mt-1 text-[11px] opacity-80">
-                Pastikan saldo BNB mencukupi dan jaringan dompet Anda berada di BSC Testnet.
+                Make sure your BNB balance is sufficient and your wallet network is set to BSC Testnet.
               </p>
             </div>
           </div>
@@ -134,8 +134,8 @@ export default function SendForm({ onSubmitted }: SendFormProps) {
           <div className="alert alert-safe" role="status">
             <span aria-hidden className="pulse-bronze h-2 w-2 rounded-full bg-[var(--bronze)] shrink-0 mt-1" />
             <div>
-              <p className="font-semibold">Menunggu konfirmasi blok di BSC Testnet…</p>
-              <p className="text-[11px] opacity-85">Transaksi Anda sedang dicatat di blockchain.</p>
+              <p className="font-semibold">Waiting for block confirmation on BSC Testnet…</p>
+              <p className="text-[11px] opacity-85">Your transaction is being recorded on the blockchain.</p>
             </div>
           </div>
         )}
@@ -144,14 +144,14 @@ export default function SendForm({ onSubmitted }: SendFormProps) {
           <div className="alert alert-safe" role="status">
             <span aria-hidden className="text-base font-bold">✓</span>
             <div>
-              <p className="font-semibold">Transaksi Berhasil Dibuat!</p>
+              <p className="font-semibold">Transaction Created Successfully!</p>
               <p className="mt-0.5 text-xs opacity-90 leading-relaxed">
-                Dana kini berada di brankas escrow. Sistem verifikasi otomatis sedang berjalan.
-                Hasil dan perkembangan dapat dipantau di bagian <strong>Pemantauan Verifikasi Live</strong> di bawah.
+                The funds are now in the escrow vault. The automatic verification system is running.
+                You can follow the result and progress in the <strong>Live Verification Monitor</strong> section below.
               </p>
               {hash && (
                 <p className="mt-1.5 font-mono text-[11px] opacity-75">
-                  ID Transaksi: {hash.slice(0, 20)}…
+                  Transaction ID: {hash.slice(0, 20)}…
                 </p>
               )}
             </div>

@@ -33,7 +33,7 @@ interface VoteEnvelope {
 async function fetchPending(): Promise<PendingHuman[]> {
   const json = await fetchJson<PendingEnvelope>("/api/human/pending");
   if (!json.success) {
-    throw new Error(json.error ?? "Antrean tinjauan tidak dapat dimuat.");
+    throw new Error(json.error ?? "The review queue could not be loaded.");
   }
   return dedupeByEscrow(json.data ?? []);
 }
@@ -103,11 +103,11 @@ export default function HumanReview() {
         body: JSON.stringify({ escrowId, approve }),
       });
       if (!json.success || !json.data) {
-        setError(json.error ?? "Keputusan gagal dikirim ke backend.");
+        setError(json.error ?? "Failed to send the decision to the backend.");
         return;
       }
       setOkMsg(
-        `${approve ? "Transfer disetujui & diteruskan" : "Transfer dibatalkan & dana dikembalikan"} — tx ${String(json.data.txHash).slice(0, 18)}…`
+        `${approve ? "Transfer approved & forwarded" : "Transfer cancelled & funds refunded"} — tx ${String(json.data.txHash).slice(0, 18)}…`
       );
       await refresh();
     } catch (err) {
@@ -121,14 +121,14 @@ export default function HumanReview() {
     <section className="card overflow-hidden">
       <div className="card-head">
         <div>
-          <p className="eyebrow">Kendali Pengguna</p>
-          <p className="font-display mt-1 text-xl text-ink">Tinjauan Manual (Veto)</p>
+          <p className="eyebrow">User Control</p>
+          <p className="font-display mt-1 text-xl text-ink">Manual Review (Veto)</p>
           <p className="text-muted mt-1 text-xs leading-relaxed">
-            Transaksi yang membutuhkan persetujuan Anda sebelum dieksekusi on-chain
+            Transactions that need your approval before they execute on-chain
           </p>
         </div>
         {!loading && items.length > 0 && (
-          <span className="badge badge-bronze">{items.length} Menunggu Keputusan</span>
+          <span className="badge badge-bronze">{items.length} Awaiting Decision</span>
         )}
       </div>
 
@@ -149,12 +149,12 @@ export default function HumanReview() {
         {loading && items.length === 0 ? (
           <div className="text-muted flex items-center gap-2 text-sm py-2">
             <span className="pulse-bronze h-2 w-2 rounded-full bg-[var(--bronze)]" />
-            Memuat antrean tinjauan manual…
+            Loading the manual review queue…
           </div>
         ) : items.length === 0 ? (
           <div className="empty-note">
-            <p className="font-semibold text-ink mb-1">Semua Bersih & Aman</p>
-            Tidak ada transaksi yang tertahan. Jika sistem mendeteksi ketidakwajaran atau tingkat keyakinan berada di zona abu-abu, transaksi akan muncul di sini untuk Anda konfirmasi.
+            <p className="font-semibold text-ink mb-1">All Clear &amp; Safe</p>
+            No transactions are being held. If the system detects anything unusual, or the confidence level lands in the grey zone, the transaction will appear here for you to confirm.
           </div>
         ) : (
           <div className="flex flex-col gap-4">
@@ -167,21 +167,21 @@ export default function HumanReview() {
                   <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
                     <p className="font-display text-lg font-bold text-ink">{p.amount} BNB</p>
                     <span className="badge badge-bronze text-[11px]">
-                      Tingkat Keyakinan: {Math.round(p.confidence * 100)}%
+                      Confidence: {Math.round(p.confidence * 100)}%
                     </span>
                   </div>
 
                   <p className="text-muted mt-1.5 text-xs">
-                    Tujuan: <span className="font-mono text-ink font-medium">{truncateAddress(p.recipient)}</span>
+                    To: <span className="font-mono text-ink font-medium">{truncateAddress(p.recipient)}</span>
                     {p.created_at && <> · {formatTimestamp(p.created_at)}</>}
                   </p>
 
                   <div className="mt-3 flex flex-wrap items-center gap-2">
                     <span className={aiRec ? "tag tag-safe" : "tag tag-danger"}>
-                      Rekomendasi Sistem: {aiRec ? "DISARANKAN LANJUT" : "DISARANKAN BATAL"}
+                      System Recommendation: {aiRec ? "PROCEED ADVISED" : "CANCEL ADVISED"}
                     </span>
                     {p.risk_level && (
-                      <span className="tag">Level Risiko: {p.risk_level}</span>
+                      <span className="tag">Risk Level: {p.risk_level}</span>
                     )}
                   </div>
 
@@ -200,7 +200,7 @@ export default function HumanReview() {
                       onClick={() => vote(p.escrow_id, true)}
                       className="btn btn-safe flex-1"
                     >
-                      {busy ? "Memproses…" : "✓ Setujui (Lanjutkan)"}
+                      {busy ? "Processing…" : "✓ Approve (Continue)"}
                     </button>
                     <button
                       type="button"
@@ -208,7 +208,7 @@ export default function HumanReview() {
                       onClick={() => vote(p.escrow_id, false)}
                       className="btn btn-danger flex-1"
                     >
-                      {busy ? "Memproses…" : "✕ Tolak (Kembalikan Dana)"}
+                      {busy ? "Processing…" : "✕ Reject (Refund Funds)"}
                     </button>
                   </div>
                 </article>

@@ -1,21 +1,21 @@
 // CLI: npm run redteam -- [--llm]
-// Jalankan dari backend/ (SQLite path CWD-relative; config butuh .env).
+// Run from backend/ (SQLite path is CWD-relative; config requires .env).
 import { runRedTeam } from "./src/redTeam.js";
 
 const mode = process.argv.includes("--llm") ? "llm" : "fast";
 
-console.log(`[RedTeam] mode=${mode} — menjalankan suite…`);
+console.log(`[RedTeam] mode=${mode} — running suite…`);
 
 runRedTeam(mode)
   .then((report) => {
-    console.log(`\n[RedTeam] ─── Hasil (${report.mode}) ───`);
+    console.log(`\n[RedTeam] ─── Result (${report.mode}) ───`);
     for (const c of report.cases) {
       const mark = c.pass ? "✓" : "✗";
       console.log(`  ${mark} [${c.category}] ${c.name}`);
       console.log(`      ${c.detail}`);
     }
     console.log(
-      `\n[RedTeam] ${report.passed}/${report.total} lulus · ${report.failed} gagal · ${report.durationMs}ms`
+      `\n[RedTeam] ${report.passed}/${report.total} passed · ${report.failed} failed · ${report.durationMs}ms`
     );
     process.exit(report.failed === 0 ? 0 : 1);
   })

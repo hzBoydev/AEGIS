@@ -7,51 +7,51 @@ import {
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 export interface ToolContext {
-  /** Alamat pengirim escrow (0x...). */
+  /** Escrow sender address (0x...). */
   sender: string;
-  /** Alamat penerima escrow (0x...). */
+  /** Escrow recipient address (0x...). */
   recipient: string;
 }
 
 export interface ToolDefinition {
-  /** Nama tool — satu-satunya nilai yang sah muncul di needsData LLM. */
+  /** Tool name — the only value legally allowed in the LLM's needsData. */
   name: string;
-  /** Deskripsi singkat untuk katalog prompt. */
+  /** Short description for the prompt catalog. */
   description: string;
 }
 
 export interface ToolExecutionResult {
-  /** Nama tool yang diminta LLM (sudah divalidasi terhadap katalog). */
+  /** Tool names requested by the LLM (already validated against the catalog). */
   requested: string[];
-  /** Tool yang berhasil dieksekusi. */
+  /** Tools that executed successfully. */
   succeeded: string[];
-  /** Tool yang gagal (API down, dst). */
+  /** Tools that failed (API down, etc). */
   failed: string[];
-  /** Blok teks siap-suntik ke prompt putaran ke-2. */
+  /** Text block ready to inject into the second-round prompt. */
   block: string;
 }
 
-// ── Katalog tool (sumber kebenaran untuk validasi needsData) ──────────────────
+// ── Tool catalog (source of truth for needsData validation) ───────────────────
 export const TOOL_CATALOG: ToolDefinition[] = [
   {
     name: "get_sender_profile",
     description:
-      "Profil on-chain pengirim (saldo, umur wallet, jumlah transaksi, apakah contract) + reputasi keamanan GoPlus untuk alamat pengirim.",
+      "On-chain profile of the sender (balance, wallet age, transaction count, whether it is a contract) + GoPlus security reputation for the sender address.",
   },
   {
     name: "get_recipient_recent_txs",
     description:
-      "10 transaksi terakhir milik penerima (waktu, arah masuk/keluar, alamat lawan transaksi, nominal BNB) untuk melihat pola aktivitas dan velocity.",
+      "The recipient's last 10 transactions (time, in/out direction, counterparty address, BNB amount) to inspect activity patterns and velocity.",
   },
   {
     name: "get_sender_db_history",
     description:
-      "Riwayat escrow AEGIS dari pengirim ini: total pernah mengirim, berapa disetujui/ditolak, serta daftar penerima lain yang pernah dikirimi.",
+      "AEGIS escrow history for this sender: how many were ever sent, how many were approved/rejected, plus the list of other recipients that were sent to.",
   },
   {
     name: "get_recipient_db_history",
     description:
-      "Semua escrow AEGIS yang pernah ditujukan ke penerima ini dari berbagai pengirim berbeda (deteksi penerima sebagai titik kumpul dana).",
+      "All AEGIS escrows ever addressed to this recipient from various different senders (detects the recipient as a fund pooling hub).",
   },
 ];
 
@@ -60,8 +60,8 @@ export const TOOL_NAMES: ReadonlySet<string> = new Set(
 );
 
 /**
- * Validasi `needsData` LLM terhadap katalog.
- * Nama di luar katalog tidak pernah dieksekusi (injection / hallucination).
+ * Validate the LLM's `needsData` against the catalog.
+ * Names outside the catalog are never executed (injection / hallucination).
  */
 export function sanitizeNeedsData(raw: readonly string[]): {
   requested: string[];
@@ -72,10 +72,10 @@ export function sanitizeNeedsData(raw: readonly string[]): {
   return { requested, dropped };
 }
 
-/** Batas total karakter blok tool agar prompt putaran ke-2 tetap ringan. */
+/** Total character limit for the tool block so the second-round prompt stays light. */
 const BLOCK_CHAR_LIMIT = 6000;
 
-// ── Eksekutor per tool ────────────────────────────────────────────────────────
+// ── Per-tool executors ────────────────────────────────────────────────────────
 async function runSenderProfile(ctx: ToolContext): Promise<string> {
   const [intel, security] = await Promise.all([
     getOnChainIntel(ctx.sender),
@@ -83,19 +83,19 @@ async function runSenderProfile(ctx: ToolContext): Promise<string> {
   ]);
 
   return JSON.stringify({
-    alamat: ctx.sender,
+    address: ctx.sender,
     onChain: {
       txCount: intel.txCount,
-      txCountSumber: intel.txCountSource,
-      catatanSumber:
+      txCountSource: intel.txCountSource,
+      sourceNote:
         intel.txCountSource === "rpc_nonce"
-          ? "nonce RPC = HANYA transaksi keluar; transaksi masuk tidak terhitung. BUKAN total transaksi on-chain."
+          ? "RPC nonce = OUTGOING transactions ONLY; incoming transactions are not counted. NOT the on-chain transaction total."
           : undefined,
-      umurHari:
+      walletAgeDays:
         intel.walletAgeInDays !== null
           ? Number(intel.walletAgeInDays.toFixed(1))
           : null,
-      saldoBNB:
+      balanceBNB:
         intel.balanceBNB !== null
           ? Number(intel.balanceBNB.toFixed(6))
           : null,
@@ -106,9 +106,9 @@ async function runSenderProfile(ctx: ToolContext): Promise<string> {
     goplus: {
       status: security.status,
       flags: security.riskFlags,
-      catatan:
+      note:
         security.status === "unavailable"
-          ? "GoPlus tidak tersedia — anggap TIDAK DIKETAHUI, bukan aman."
+          ? "GoPlus is unavailable — treat as UNKNOWN, not safe."
           : undefined,
     },
   });
@@ -117,39 +117,39 @@ async function runSenderProfile(ctx: ToolContext): Promise<string> {
 async function runRecipientRecentTxs(ctx: ToolContext): Promise<string> {
   const txs = await getRecentTransactions(ctx.recipient, 10);
   if (txs === null) {
-    throw new Error("BscScan txlist tidak tersedia");
+    throw new Error("BscScan txlist is unavailable");
   }
   if (txs.length === 0) {
     return JSON.stringify({
-      catatan: "Penerima ini tidak memiliki transaksi tercatat di BSC Testnet.",
+      note: "This recipient has no recorded transactions on BSC Testnet.",
     });
   }
-  return JSON.stringify({ jumlah: txs.length, transaksi: txs });
+  return JSON.stringify({ count: txs.length, transactions: txs });
 }
 
 function runSenderDbHistory(ctx: ToolContext): string {
   const h = getSenderEscrowHistory(ctx.sender);
   return JSON.stringify({
-    catatan:
-      "Riwayat DATABASE internal AEGIS — BUKAN data on-chain. Total ini = jumlah escrow via AEGIS, bukan jumlah transaksi blockchain.",
+    note:
+      "AEGIS internal DATABASE history — NOT on-chain data. This total = the number of escrows via AEGIS, not the number of blockchain transactions.",
     totalEscrow: h.total,
-    disetujui: h.approved,
-    ditolak: h.rejected,
-    penerimaLain: h.otherRecipients,
-    escrowTerakhir: h.recent,
+    approved: h.approved,
+    rejected: h.rejected,
+    otherRecipients: h.otherRecipients,
+    recentEscrows: h.recent,
   });
 }
 
 function runRecipientDbHistory(ctx: ToolContext): string {
   const h = getRecipientEscrowHistory(ctx.recipient);
   return JSON.stringify({
-    catatan:
-      "Riwayat DATABASE internal AEGIS — BUKAN data on-chain. Total ini = jumlah escrow yang ditujukan ke alamat ini via AEGIS, bukan jumlah transaksi blockchain.",
+    note:
+      "AEGIS internal DATABASE history — NOT on-chain data. This total = the number of escrows addressed to this address via AEGIS, not the number of blockchain transactions.",
     totalEscrow: h.total,
-    disetujui: h.approved,
-    ditolak: h.rejected,
-    pengirimBerbeda: h.distinctSenders,
-    escrowTerakhir: h.recent,
+    approved: h.approved,
+    rejected: h.rejected,
+    distinctSenders: h.distinctSenders,
+    recentEscrows: h.recent,
   });
 }
 
@@ -164,21 +164,21 @@ async function runSingleTool(name: string, ctx: ToolContext): Promise<string> {
     case "get_recipient_db_history":
       return runRecipientDbHistory(ctx);
     default:
-      throw new Error(`Tool tidak dikenal: ${name}`);
+      throw new Error(`Unknown tool: ${name}`);
   }
 }
 
-// ── Eksekusi massal (paralel, tiap tool gagal-terisolasi) ─────────────────────
+// ── Bulk execution (parallel, each tool failure-isolated) ─────────────────────
 /**
- * Jalankan semua tool yang diminta LLM secara paralel.
+ * Run every tool requested by the LLM, in parallel.
  *
- * Sifat keamanan:
- * - Tool HANYA menghasilkan bukti tambahan; tool TIDAK PERNAH menentukan
- *   keputusan eligible/confidence (tetap di LLM + threshold + hard rules).
- * - Kegagalan tool dilaporkan eksplisit sebagai "GAGAL / tidak diketahui"
- *   ke prompt — kegagalan API tidak pernah dianggap aman.
- * - Gagal total pun tetap menghasilkan blok berisi penanda kegagalan,
- *   caller yang memutuskan apakah layak putaran ke-2.
+ * Security properties:
+ * - Tools ONLY produce additional evidence; they NEVER decide
+ *   eligible/confidence (that stays with the LLM + threshold + hard rules).
+ * - Tool failures are reported explicitly as "FAILED / unknown"
+ *   to the prompt — an API failure is never considered safe.
+ * - A total failure still yields a block containing failure markers;
+ *   the caller decides whether a second round is worthwhile.
  */
 export async function executeTools(
   requested: string[],
@@ -195,10 +195,10 @@ export async function executeTools(
           name,
           ok: false,
           out: JSON.stringify({
-            status: "GAGAL",
+            status: "FAILED",
             error: msg,
-            catatan:
-              "Tool gagal dijalankan. Anggap data ini TIDAK DIKETAHUI, bukan aman.",
+            note:
+              "Tool execution failed. Treat this data as UNKNOWN, not safe.",
           }),
         };
       }
@@ -209,7 +209,7 @@ export async function executeTools(
   const failed = results.filter((r) => !r.ok).map((r) => r.name);
 
   const block = results
-    .map((r) => `=== HASIL TOOL: ${r.name} ===\n${r.out}`)
+    .map((r) => `=== TOOL RESULT: ${r.name} ===\n${r.out}`)
     .join("\n\n")
     .slice(0, BLOCK_CHAR_LIMIT);
 

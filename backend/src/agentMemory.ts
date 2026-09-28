@@ -22,12 +22,12 @@ export interface RecentDecision {
   createdAt: string;
 }
 
-// Gunakan DB yang sama dengan db.ts (shared file SQLite)
+// Uses the same DB as db.ts (shared SQLite file)
 const db = new Database("aegis.db", { readonly: false, fileMustExist: false });
 
 /**
- * Ambil riwayat keputusan AEGIS untuk satu alamat (sebagai recipient).
- * Hasilnya digunakan sebagai konteks memori untuk prompt LLM.
+ * Fetch the AEGIS decision history for one address (as recipient).
+ * The result is used as memory context for the LLM prompt.
  */
 export function getAddressMemory(address: string): AddressMemory {
   const addr = address.toLowerCase();
@@ -133,21 +133,21 @@ export function getAddressMemory(address: string): AddressMemory {
 }
 
 /**
- * Format AddressMemory menjadi teks siap-inject ke prompt LLM.
- * Jika belum ada riwayat, kembalikan keterangan "pertama kali".
+ * Format AddressMemory as text ready to inject into the LLM prompt.
+ * If there is no history yet, return the "first time" notice.
  */
 export function formatMemoryForPrompt(memory: AddressMemory): string {
   if (memory.totalSeen === 0) {
-    return "MEMORI HISTORIS AEGIS (riwayat INTERNAL — BUKAN data on-chain):\n  Alamat ini BELUM PERNAH bertransaksi via AEGIS (riwayat internal kosong). Ini adalah evaluasi pertama.";
+    return "AEGIS HISTORICAL MEMORY (INTERNAL history — NOT on-chain data):\n  This address has NEVER transacted via AEGIS before (internal history is empty). This is the first evaluation.";
   }
 
   const rejRate = ((memory.totalRejected / memory.totalSeen) * 100).toFixed(0);
   const flags =
     memory.seenRiskFlags.length > 0
       ? memory.seenRiskFlags.join(", ")
-      : "tidak ada";
+      : "none";
   const hardWarnLine = memory.hadHardRuleReject
-    ? "\n  PERINGATAN: Alamat ini PERNAH ditolak oleh hard security rule (GoPlus/blacklist)."
+    ? "\n  WARNING: This address WAS REJECTED before by a hard security rule (GoPlus/blacklist)."
     : "";
 
   const recentLines = memory.recentDecisions
@@ -163,44 +163,44 @@ export function formatMemoryForPrompt(memory: AddressMemory): string {
     .join("\n");
 
   const parts: string[] = [
-    "MEMORI HISTORIS AEGIS (riwayat INTERNAL sistem — BUKAN data on-chain):",
-    "  Transaksi via AEGIS      : " + memory.totalSeen + "x (riwayat DATABASE AEGIS — bukan jumlah transaksi on-chain)",
-    "  Disetujui                : " + memory.totalApproved + "x",
-    "  Ditolak                  : " + memory.totalRejected + "x (tingkat penolakan: " + rejRate + "%)",
-    "  Avg confidence sebelumnya: " + (memory.avgConfidence * 100).toFixed(1) + "%",
-    "  Risk level dominan       : " + (memory.dominantRiskLevel ?? "tidak ada"),
-    "  Risk flags pernah terlihat: " + flags,
-    "  Pertama dilihat          : " + (memory.firstSeenAt ?? "-"),
-    "  Terakhir dilihat         : " + (memory.lastSeenAt ?? "-"),
+    "AEGIS HISTORICAL MEMORY (system INTERNAL history — NOT on-chain data):",
+    "  Transactions via AEGIS  : " + memory.totalSeen + "x (AEGIS DATABASE history — not the on-chain transaction count)",
+    "  Approved                : " + memory.totalApproved + "x",
+    "  Rejected                : " + memory.totalRejected + "x (rejection rate: " + rejRate + "%)",
+    "  Avg confidence previously: " + (memory.avgConfidence * 100).toFixed(1) + "%",
+    "  Dominant risk level     : " + (memory.dominantRiskLevel ?? "none"),
+    "  Risk flags ever seen    : " + flags,
+    "  First seen              : " + (memory.firstSeenAt ?? "-"),
+    "  Last seen               : " + (memory.lastSeenAt ?? "-"),
     hardWarnLine,
   ];
 
   if (memory.recentDecisions.length > 0) {
-    parts.push("\n  3 Keputusan Terakhir:\n" + recentLines);
+    parts.push("\n  3 Most Recent Decisions:\n" + recentLines);
   }
 
   parts.push(
-    "\nGUNAKAN KONTEKS INI: Sebutkan fakta ini ke user dalam reason — berapa kali akun ini " +
-    "sudah bertransaksi via AEGIS dan berapa kali ditolak. Jika alamat ini sering ditolak " +
-    "atau pernah terkena hard rule, tingkatkan kewaspadaan dan berikan bobot lebih pada " +
-    "riwayat negatif tersebut."
+    "\nUSE THIS CONTEXT: State these facts to the user in the reason — how many times this " +
+    "account has transacted via AEGIS and how many times it was rejected. If this address is " +
+    "rejected often or has ever hit a hard rule, raise your guard and give that negative " +
+    "history more weight."
   );
 
   return parts.filter((l) => l !== "").join("\n");
 }
 
 /**
- * Ringkasan memori SATU BARIS untuk disisipkan sebagai baris "Fakta" pada
- * reason final yang ditampilkan ke user — dijamin tampil walau LLM lupa
- * menyebutnya dalam reasoning-nya.
+ * ONE-LINE memory summary to be inserted as the "Facts" line in the
+ * final reason shown to the user — guaranteed to appear even if the LLM
+ * forgets to mention it in its reasoning.
  */
 export function formatMemoryFacts(memory: AddressMemory): string {
   if (memory.totalSeen === 0) {
-    return "belum pernah (evaluasi pertama)";
+    return "never before (first evaluation)";
   }
   return (
     memory.totalSeen +
-    "x (disetujui " + memory.totalApproved + "x, ditolak " + memory.totalRejected + "x" +
-    (memory.hadHardRuleReject ? ", pernah kena hard rule" : "") + ")"
+    "x (approved " + memory.totalApproved + "x, rejected " + memory.totalRejected + "x" +
+    (memory.hadHardRuleReject ? ", previously hit a hard rule" : "") + ")"
   );
 }

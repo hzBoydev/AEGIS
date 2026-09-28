@@ -1,5 +1,5 @@
 // ── Stream bus: pipeline events → SSE clients ─────────────────────────────────────
-// Ring buffer + subscriber set. Server SSE hanya mem-pipe; pipeline cukup publish().
+// Ring buffer + subscriber set. Server SSE only pipes; the pipeline just calls publish().
 
 export type StreamPhase =
   | "escrow"
@@ -16,15 +16,15 @@ export type StreamPhase =
 export interface StreamEvent {
   /** Monotonic-ish id per event. */
   ts: number;
-  /** Escrow yang sedang diproses (kosong bila belum diketahui). */
+  /** Escrow currently being processed (empty when not yet known). */
   escrowId?: string;
   phase: StreamPhase;
   status: "start" | "ok" | "fail" | "skip" | "done";
-  /** Label singkat Bahasa Indonesia untuk UI. */
+  /** Short English label for the UI. */
   label: string;
-  /** Detail opsional (argumen, alasan, ringkasan bukti). */
+  /** Optional detail (arguments, reason, evidence summary). */
   detail?: string;
-  /** Payload terstruktur opsional (confidence, eligible, dll). */
+  /** Optional structured payload (confidence, eligible, etc). */
   data?: Record<string, unknown>;
 }
 
@@ -34,7 +34,7 @@ const subscribers = new Set<Subscriber>();
 const BUFFER_MAX = 80;
 const buffer: StreamEvent[] = [];
 
-// ── Arsip sesi sidang (per escrow) untuk riwayat di UI ─────────────────────────
+// ── Hearing session archive (per escrow) for the UI history ─────────────────────
 const SESSION_MAX = 50;
 const SESSION_EVENT_MAX = 160;
 const sessions = new Map<string, StreamEvent[]>();
@@ -50,7 +50,7 @@ function archive(ev: StreamEvent): void {
   if (list.length > SESSION_EVENT_MAX) {
     list.splice(0, list.length - SESSION_EVENT_MAX);
   }
-  // Map mempertahankan urutan insert — reset insert-order agar yang aktif terbaru.
+  // Map keeps insertion order — reset it so the most recently active comes first.
   sessions.delete(ev.escrowId);
   sessions.set(ev.escrowId, list);
   while (sessions.size > SESSION_MAX) {
@@ -67,7 +67,7 @@ export interface DebateSession {
   events: StreamEvent[];
 }
 
-/** Arsip sesi sidang, terbaru dulu. */
+/** Hearing session archive, newest first. */
 export function getDebateSessions(): DebateSession[] {
   const out: DebateSession[] = [];
   for (const [escrowId, events] of sessions) {
@@ -112,12 +112,12 @@ export function publish(
     try {
       fn(full);
     } catch {
-      // subscriber error tidak boleh merusak pipeline
+      // A subscriber error must never break the pipeline
     }
   }
 }
 
-/** Subscribe ke event live. Returns unsubscribe. */
+/** Subscribe to live events. Returns an unsubscribe function. */
 export function subscribe(fn: Subscriber): () => void {
   subscribers.add(fn);
   return () => {
@@ -125,7 +125,7 @@ export function subscribe(fn: Subscriber): () => void {
   };
 }
 
-/** Replay buffer untuk client baru (SSE on-connect). */
+/** Replay buffer for a newly connected client (SSE on-connect). */
 export function getRecentEvents(): StreamEvent[] {
   return [...buffer];
 }

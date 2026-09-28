@@ -34,26 +34,26 @@ export default function DebateModal({ open, onClose }: DebateModalProps) {
       onClick={onClose}
       role="dialog"
       aria-modal="true"
-      aria-label="Pemantauan Verifikasi Live"
+      aria-label="Live Verification Monitor"
     >
       <div className="modal-panel" onClick={(e) => e.stopPropagation()}>
         <div className="card-head">
           <div>
-            <p className="eyebrow">Sedang Berjalan</p>
-            <p className="font-display mt-1 text-xl text-ink">Pemantauan Verifikasi Live</p>
+            <p className="eyebrow">In Progress</p>
+            <p className="font-display mt-1 text-xl text-ink">Live Verification Monitor</p>
             {currentId ? (
               <p className="text-muted mt-1 font-mono text-[11px]">
-                ID Escrow: {currentId.slice(0, 16)}…
+                Escrow ID: {currentId.slice(0, 16)}…
               </p>
             ) : (
               <p className="text-muted mt-1 text-xs">
-                Menunggu sistem memproses transaksi escrow Anda…
+                Waiting for the system to process your escrow transaction…
               </p>
             )}
           </div>
           <div className="flex items-center gap-2">
             <LiveStatusBadge />
-            <button type="button" className="icon-btn" onClick={onClose} aria-label="Tutup popup">
+            <button type="button" className="icon-btn" onClick={onClose} aria-label="Close popup">
               ✕
             </button>
           </div>

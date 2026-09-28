@@ -12,15 +12,15 @@ import { config } from "./config.js";
  * end-to-end during a live demo, without needing to find/use a real
  * known-malicious mainnet address (which would be risky and unreliable).
  *
- * In production: set GOPLUS_SIMULATE=false (atau hapus blok ini) — GoPlus
- * akan query database aslinya secara eksklusif.
+ * In production: set GOPLUS_SIMULATE=false (or delete this block) — GoPlus
+ * will query its real database exclusively.
  *
- * Menambah address demo TANPA edit kode:
+ * Adding demo addresses WITHOUT editing code:
  *   GOPLUS_SIMULATE=true
  *   GOPLUS_SIMULATED_ADDRESSES=0xaaa...,0xbbb...,0xccc...
  */
 const DEFAULT_DEMO_MALICIOUS_ADDRESSES = [
-  // Address demo bawaan — aman dipakai saat pitch/demo.
+  // Built-in demo addresses — safe to use during a pitch/demo.
   "0x101206f123f724438f5ae6009790217d38528328",
   "0x7661a11547ee70053a4d41114da72c4336c5a1db",
   "0xaccb46d356055da62693ba24f644ae15abb957c7",
@@ -41,7 +41,7 @@ function buildSimulatedMaliciousSet(): Set<string> {
     if (!addr) continue;
     if (!ADDRESS_RE.test(addr)) {
       console.warn(
-        `[GoPlus] ⚠️  GOPLUS_SIMULATED_ADDRESSES diabaikan (bukan address valid): ${addr}`
+        `[GoPlus] ⚠️  GOPLUS_SIMULATED_ADDRESSES ignored (not a valid address): ${addr}`
       );
       continue;
     }
@@ -112,7 +112,7 @@ interface GoPlusResponse {
 }
 
 /**
- * Flags yang jika bernilai "1" / 1 dianggap malicious signal yang jelas.
+ * Flags that count as a clear malicious signal when set to "1" / 1.
  */
 const MALICIOUS_FLAGS: (keyof GoPlusAddressResult)[] = [
   "is_blacklisted",

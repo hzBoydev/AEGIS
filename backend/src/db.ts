@@ -59,8 +59,8 @@ if (!colNames.includes("human_reason")) {
 }
 
 // ── De-dup: 1 escrow = 1 decision ────────────────────────────────────────────
-// Poller bisa proses ulang setelah tsx restart (Set in-memory kosong) —
-// UNIQUE mencegah dua baris pending_human untuk escrow yang sama.
+// The poller may reprocess after a tsx restart (in-memory Set is empty) —
+// UNIQUE prevents two pending_human rows for the same escrow.
 db.exec(`
   DELETE FROM decisions
   WHERE id NOT IN (
@@ -87,11 +87,11 @@ export interface DecisionRecord {
   decidedBy?: string;
   riskFlags?: string[];
   txHash?: string;
-  /** Nama tool yang dieksekusi AI pada keputusan ini (tool calling). */
+  /** Tools the AI executed for this decision (tool calling). */
   toolsUsed?: string[];
-  /** Transkrip sidang multi-agent (Investigator → Advocate → Judge). */
+  /** Multi-agent hearing transcript (Investigator → Advocate → Judge). */
   debate?: unknown;
-  /** final = sudah on-chain; pending_human = hold, tunggu vote. */
+  /** final = already on-chain; pending_human = hold, awaiting a vote. */
   status?: DecisionStatus;
   humanReason?: string | undefined;
 }
@@ -122,7 +122,7 @@ export function saveDecision(record: DecisionRecord): void {
     | undefined;
   if (existing) {
     console.warn(
-      `[DB] skip saveDecision — escrow_id sudah ada: ${record.escrowId.slice(0, 14)}…`
+      `[DB] skip saveDecision — escrow_id already exists: ${record.escrowId.slice(0, 14)}…`
     );
     return;
   }
@@ -169,7 +169,7 @@ export function getDecisionsCount(): number {
   return row?.n ?? 0;
 }
 
-/** Riwayat escrow yang melibatkan address tertentu (sender ATAU recipient). */
+/** Escrow history involving a given address (sender OR recipient). */
 export function getAllDecisionsForAddress(address: string, limit: number): unknown[] {
   const addr = address.toLowerCase();
   return db
@@ -191,7 +191,7 @@ export function getDecisionsCountForAddress(address: string): number {
   return row?.n ?? 0;
 }
 
-/** Set escrow_id yang pernah melibatkan address — dipakai filter arsip sidang. */
+/** Set of escrow_id values that ever involved an address — used to filter the hearing archive. */
 export function getEscrowIdsInvolving(address: string): Set<string> {
   const addr = address.toLowerCase();
   const rows = db
@@ -208,7 +208,7 @@ export function getDecisionByEscrowId(escrowId: string): unknown {
     .get(escrowId);
 }
 
-/** Escrow yang masih menunggu vote manusia (1 baris per escrow_id). */
+/** Escrows still waiting for a human vote (1 row per escrow_id). */
 export function getPendingHumanDecisions(): PendingHumanRow[] {
   return db
     .prepare(
@@ -237,8 +237,8 @@ export function getPendingHumanByEscrowId(
 }
 
 /**
- * Finalisasi setelah vote manusia: update baris pending → final + tx on-chain.
- * eligible = vote manusia (bukan rekomendasi AI).
+ * Finalize after the human vote: update the pending row → final + on-chain tx.
+ * eligible = the human vote (not the AI recommendation).
  */
 export function finalizeHumanDecision(input: {
   escrowId: string;
@@ -277,7 +277,7 @@ export interface SenderEscrowSummary {
   total: number;
   approved: number;
   rejected: number;
-  /** Penerima lain yang pernah dikirimi escrow oleh pengirim ini. */
+  /** Other recipients that this sender has ever sent escrows to. */
   otherRecipients: string[];
   recent: Array<{
     recipient: string;
@@ -291,7 +291,7 @@ export interface RecipientEscrowSummary {
   total: number;
   approved: number;
   rejected: number;
-  /** Jumlah pengirim berbeda yang pernah mengirim ke penerima ini. */
+  /** Number of distinct senders that have ever sent to this recipient. */
   distinctSenders: number;
   recent: Array<{
     sender: string;
@@ -302,7 +302,7 @@ export interface RecipientEscrowSummary {
   }>;
 }
 
-/** Riwayat escrow AEGIS dari sisi PENGIRIM (tool: get_sender_db_history). */
+/** AEGIS escrow history from the SENDER side (tool: get_sender_db_history). */
 export function getSenderEscrowHistory(sender: string): SenderEscrowSummary {
   const addr = sender.toLowerCase();
 
@@ -348,7 +348,7 @@ export function getSenderEscrowHistory(sender: string): SenderEscrowSummary {
   };
 }
 
-/** Riwayat escrow AEGIS dari sisi PENERIMA, lintas pengirim (tool: get_recipient_db_history). */
+/** AEGIS escrow history from the RECIPIENT side, across senders (tool: get_recipient_db_history). */
 export function getRecipientEscrowHistory(
   recipient: string
 ): RecipientEscrowSummary {

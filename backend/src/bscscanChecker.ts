@@ -2,36 +2,36 @@ import { config, publicClient } from "./config.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 /**
- * Asal angka `txCount` — menentukan ARTI angka tersebut:
- * - "explorer" : jumlah transaksi masuk+keluar dari explorer (BscScan/Etherscan).
- * - "rpc_nonce": nonce dari RPC = hanya transaksi KELUAR. Transaksi masuk TIDAK
- *                terhitung, sehingga akun penerima murni bernilai 0.
- * - "none"     : tidak ada sumber sama sekali (txCount null).
+ * Origin of the `txCount` number — determines WHAT that number MEANS:
+ * - "explorer" : incoming+outgoing tx count from the explorer (BscScan/Etherscan).
+ * - "rpc_nonce": nonce from RPC = OUTGOING transactions ONLY. Incoming transactions
+ *                are NOT counted, so a receive-only account shows 0.
+ * - "none"     : no source at all (txCount null).
  */
 export type TxCountSource = "explorer" | "rpc_nonce" | "none";
 
 export interface OnChainIntel {
   /**
-   * Jumlah transaksi. null jika benar-benar tidak tersedia.
-   * Sumber: daftar tx explorer bila aktif; JIKA explorer gagal, fallback ke
-   * nonce RPC (transaksi KELUAR — proxy aktivitas, bukan total in+out).
+   * Transaction count. null if genuinely unavailable.
+   * Source: the explorer tx list when available; IF the explorer fails, fall back
+   * to the RPC nonce (OUTGOING transactions — an activity proxy, not in+out total).
    */
   txCount: number | null;
-  /** Dari mana `txCount` berasal — WAJIB dibaca saat menampilkan/menjelaskan angka. */
+  /** Where `txCount` came from — MUST be read when displaying/explaining the number. */
   txCountSource: TxCountSource;
   /**
-   * Wallet age in days since first transaction. null jika tidak diketahui.
-   * CATATAN: hanya bisa diambil dari explorer — RPC tidak punya riwayat
-   * transaksi pertama, sehingga saat explorer down field ini tetap null.
+   * Wallet age in days since first transaction. null if unknown.
+   * NOTE: only obtainable from the explorer — RPC has no first-transaction
+   * history, so this field stays null while the explorer is down.
    */
   walletAgeInDays: number | null;
-  /** True jika walletAgeInDays < NEW_WALLET_DAYS; jika usia tak diketahui, berbasis txCount === 0. */
+  /** True if walletAgeInDays < NEW_WALLET_DAYS; when age is unknown, based on txCount === 0. */
   isNewWallet: boolean;
   /** True if the address is a smart contract. */
   isContract: boolean;
   /** BNB balance. null if unavailable. */
   balanceBNB: number | null;
-  /** True if BOTH explorer dan RPC gagal mengembalikan data apa pun. */
+  /** True if BOTH the explorer and RPC failed to return any data. */
   unavailable: boolean;
 }
 
@@ -104,22 +104,22 @@ function parseFirstTxAge(
   return { txCount: result.length, walletAgeInDays };
 }
 
-// ── Recent transactions (untuk tool calling) ──────────────────────────────────
+// ── Recent transactions (for tool calling) ───────────────────────────────────
 export interface RecentTx {
-  /** Waktu transaksi "YYYY-MM-DD HH:mm" (UTC). */
-  waktu: string;
-  arah: "masuk" | "keluar";
-  /** Alamat lawan transaksi (bukan address yang di-query). */
-  alamat: string;
-  nilaiBNB: number;
+  /** Transaction time "YYYY-MM-DD HH:mm" (UTC). */
+  time: string;
+  direction: "in" | "out";
+  /** Counterparty address (not the address being queried). */
+  address: string;
+  valueBNB: number;
 }
 
 /**
- * Ambil N transaksi TERAKHIR (sort desc) milik sebuah alamat,
- * dipakai oleh tool `get_recipient_recent_txs` untuk melihat pola aktivitas.
+ * Fetch the N MOST RECENT transactions (sort desc) of an address,
+ * used by the `get_recipient_recent_txs` tool to inspect activity patterns.
  *
- * @returns Daftar transaksi, [] jika memang tidak ada transaksi,
- *          atau null jika BscScan gagal dijangkau (unavailable ≠ kosong).
+ * @returns The transaction list, [] when there genuinely are no transactions,
+ *          or null when BscScan is unreachable (unavailable ≠ empty).
  */
 export async function getRecentTransactions(
   address: string,
@@ -148,28 +148,28 @@ export async function getRecentTransactions(
 
       return resp.result.slice(0, limit).map((tx): RecentTx => {
         const ts = Number(tx.timeStamp);
-        const waktu =
+        const time =
           !isNaN(ts) && ts > 0
             ? new Date(ts * 1000).toISOString().slice(0, 16).replace("T", " ")
             : "?";
 
-        let nilaiBNB = 0;
+        let valueBNB = 0;
         try {
-          nilaiBNB = Number(BigInt(String(tx.value ?? "0"))) / 1e18;
+          valueBNB = Number(BigInt(String(tx.value ?? "0"))) / 1e18;
         } catch {
-          nilaiBNB = 0;
+          valueBNB = 0;
         }
-        nilaiBNB = Math.round(nilaiBNB * 1e8) / 1e8;
+        valueBNB = Math.round(valueBNB * 1e8) / 1e8;
 
         const from = String(tx.from ?? "").toLowerCase();
-        const arah: RecentTx["arah"] = from === addr ? "keluar" : "masuk";
-        const alamat = from === addr ? String(tx.to ?? "?") : from;
+        const direction: RecentTx["direction"] = from === addr ? "out" : "in";
+        const counterparty = from === addr ? String(tx.to ?? "?") : from;
 
-        return { waktu, arah, alamat, nilaiBNB };
+        return { time, direction, address: counterparty, valueBNB };
       });
     }
-    // "No transactions found" saja yang berarti benar-benar kosong.
-    // NOTOK / endpoint deprecated / rate limit → null (gagal, bukan kosong).
+    // Only "No transactions found" really means empty.
+    // NOTOK / endpoint deprecated / rate limit → null (failure, not empty).
     if (
       resp.status === "0" &&
       typeof resp.result === "string" &&
@@ -250,8 +250,8 @@ export async function getOnChainIntel(address: string): Promise<OnChainIntel> {
       txCountSource = "explorer";
       walletAgeInDays = null;
     }
-    // status "0" LAINNYA (NOTOK / endpoint deprecated / rate limit) TIDAK boleh
-    // dianggap "0 transaksi" — biarkan null (API gagal ≠ dompet kosong).
+    // Any OTHER status "0" (NOTOK / endpoint deprecated / rate limit) must NOT
+    // be read as "0 transactions" — leave it null (API failure ≠ empty wallet).
 
     // ── Parse balance ─────────────────────────────────────────────────────────
     let balanceBNB: number | null = null;
@@ -275,11 +275,11 @@ export async function getOnChainIntel(address: string): Promise<OnChainIntel> {
     let isContract = isContractFromExplorer;
 
     // ── Fallback & ground-truth via RPC node ──────────────────────────────────
-    // Endpoint explorer BscScan V1 sudah deprecated dan chain 97 TIDAK ada di
-    // tier gratis Etherscan V2 (paid-only) — data explorer bisa mati total.
-    // Balance, nonce (transaksi keluar), dan code contract tetap tersedia
-    // GRATIS dari RPC node yang sama yang dipakai seluruh aplikasi ini.
-    // Usia wallet TIDAK bisa diambil dari RPC → tetap null ("tidak diketahui").
+    // The BscScan V1 explorer endpoint is deprecated and chain 97 is NOT in the
+    // free Etherscan V2 tier (paid-only) — explorer data can die completely.
+    // Balance, nonce (outgoing transactions) and contract code remain available
+    // for FREE from the same RPC node the whole app already uses.
+    // Wallet age CANNOT be fetched from RPC → stays null ("unknown").
     const addr0x = addr as `0x${string}`;
     const [balRes, nonceRes, codeRes] = await Promise.allSettled([
       publicClient.getBalance({ address: addr0x }),
@@ -291,13 +291,13 @@ export async function getOnChainIntel(address: string): Promise<OnChainIntel> {
       balanceBNB = Number(balRes.value) / 1e18;
     }
     if (txCount === null && nonceRes.status === "fulfilled") {
-      // Proxy aktivitas: nonce EOA = jumlah transaksi KELUAR (bukan total in+out).
+      // Activity proxy: EOA nonce = number of OUTGOING transactions (not in+out total).
       txCount = Number(nonceRes.value);
       txCountSource = "rpc_nonce";
     }
     if (codeRes.status === "fulfilled" && codeRes.value !== undefined) {
-      // getCode adalah ground truth untuk status contract (lebih andal dari
-      // heuristic ABI explorer yang ikut mati saat endpoint deprecated).
+      // getCode is the ground truth for contract status (more reliable than the
+      // explorer ABI heuristic, which also dies once the endpoint is deprecated).
       isContract = codeRes.value !== "0x";
     }
 

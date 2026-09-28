@@ -32,21 +32,21 @@ export interface FinalDecision {
   /** Which rule triggered (if hard_rule or fail_safe). */
   triggeredRule?: string;
   /**
-   * Nama tool yang dieksekusi AI sebelum keputusan final (tool calling).
-   * Kosong [] jika LLM tidak meminta data tambahan.
+   * Tools the AI executed before the final decision (tool calling).
+   * Empty [] if the LLM did not request any extra data.
    */
   toolsUsed: string[];
   /**
-   * Transkrip sidang multi-agent (Investigator → Advocate → Judge).
-   * Hanya ada pada jalur LLM/debate; hard rule & fail-safe tidak berdebat.
+   * Multi-agent hearing transcript (Investigator → Advocate → Judge).
+   * Only present on the LLM/debate path; hard rule & fail-safe do not debate.
    */
   debate?: DebateTranscript;
   /**
-   * True → JANGAN submit on-chain. Tahan escrow, minta 1 suara manusia.
-   * `eligible` = rekomendasi AI (untuk ditampilkan), bukan keputusan final.
+   * True → do NOT submit on-chain. Hold the escrow, request 1 human vote.
+   * `eligible` = the AI recommendation (for display), not the final decision.
    */
   needsHuman?: boolean;
-  /** Alasan eskalasi (Bahasa Indonesia). */
+  /** Escalation reason (English). */
   humanReason?: string;
   /** Evidence collected during pipeline. */
   evidence: {
@@ -55,7 +55,7 @@ export interface FinalDecision {
   };
 }
 
-// ── Final guards (diekspor & diuji red-team — jangan duplikasi logika) ────────
+// ── Final guards (exported & red-team tested — do not duplicate the logic) ───
 export type FinalGuard =
   | { kind: "fail_low_confidence" }
   | { kind: "override_malicious" }
@@ -63,15 +63,15 @@ export type FinalGuard =
   | { kind: "judge"; eligible: boolean };
 
 /**
- * Guard final yang MENENTUKAN outcome setelah Judge.
- * Urutan (HUMAN_ESCALATION_ENABLED=true, default):
- *   1) conf < humanMin → fail-safe REJECT (conf terlalu sampah untuk vote)
- *   2) GoPlus malicious → hard override REJECT (tanpa vote)
- *   3) conf < threshold → HOLD human (zona abu-abu)
- *   4) Investigator vs Judge berbeda lean → HOLD human (sidang berbalik)
- *   5) selain itu → ikut Judge
- * Jika eskalasi dimatikan: perilaku lama — conf < threshold → fail-safe dulu.
- * Red-team memanggil fungsi ini langsung.
+ * The final guard that DETERMINES the outcome after the Judge.
+ * Order (HUMAN_ESCALATION_ENABLED=true, default):
+ *   1) conf < humanMin → fail-safe REJECT (conf too low to be worth a vote)
+ *   2) GoPlus malicious → hard override REJECT (no vote)
+ *   3) conf < threshold → HOLD for human (grey zone)
+ *   4) Investigator vs Judge lean differently → HOLD for human (hearing flipped)
+ *   5) otherwise → follow the Judge
+ * With escalation disabled: the old behaviour — conf < threshold → fail-safe first.
+ * The red-team calls this function directly.
  */
 export function evaluateFinalOutcome(input: {
   judgeEligible: boolean;
@@ -104,9 +104,9 @@ export function evaluateFinalOutcome(input: {
     return {
       kind: "needs_human",
       reason:
-        `Confidence hakim AI (${(input.judgeConfidence * 100).toFixed(0)}%) berada di zona abu-abu ` +
+        `The AI judge confidence (${(input.judgeConfidence * 100).toFixed(0)}%) sits in the grey zone ` +
         `(${(humanMin * 100).toFixed(0)}–${(threshold * 100).toFixed(0)}%). ` +
-        `AI tidak cukup yakin untuk memutus sendiri — menunggu 1 suara manusia.`,
+        `The AI is not confident enough to decide on its own — waiting for 1 human vote.`,
     };
   }
   if (
@@ -116,10 +116,10 @@ export function evaluateFinalOutcome(input: {
     return {
       kind: "needs_human",
       reason:
-        `Sidang berbalik: Investigator cenderung ${input.investigatorEligible ? "RELEASE" : "REJECT"}, ` +
-        `Judge memutus ${input.judgeEligible ? "RELEASE" : "REJECT"} ` +
+        `The hearing flipped: the Investigator leans ${input.investigatorEligible ? "RELEASE" : "REJECT"}, ` +
+        `while the Judge ruled ${input.judgeEligible ? "RELEASE" : "REJECT"} ` +
         `(confidence ${(input.judgeConfidence * 100).toFixed(0)}%). ` +
-        `Opini agen tidak selaras — menunggu veto manusia.`,
+        `The agent opinions do not align — waiting for a human veto.`,
     };
   }
   return { kind: "judge", eligible: input.judgeEligible };
@@ -133,32 +133,32 @@ export function evaluateFinalOutcome(input: {
  *  1. Validate EVM address
  *  2. Query GoPlus + BscScan in parallel
  *  3. Run deterministic rule engine
- *  4. If REJECT → stop, return REJECT (hard rule wins — debate tidak dijalankan)
+ *  4. If REJECT → stop, return REJECT (the hard rule wins — no debate is run)
  *  5. If NEEDS_LLM → Investigator (Qwen3:8b via Ollama)
- *  5b. Tool calling (AGENTIC LOOP, maksimal 1 putaran):
- *      jika Investigator mengisi needsData → eksekusi tool (murni kode, 0 beban LLM)
- *      → panggil Investigator putaran ke-2 dengan bukti tambahan.
+ *  5b. Tool calling (AGENTIC LOOP, at most 1 round):
+ *      if the Investigator fills needsData → execute tools (pure code, 0 LLM cost)
+ *      → call the Investigator a second time with the additional evidence.
  *  5c. MULTI-AGENT DEBATE:
- *      Advocate membangun steelman untuk posisi BERKEBALIKAN dari lean Investigator
- *      → Judge menimbang bukti + kedua opini → keputusan final.
- *  6. Validate LLM JSON output
- *  7. Apply confidence threshold (pada keputusan Judge)
+ *      the Advocate builds a steelman for the position OPPOSITE to the Investigator's lean
+ *      → the Judge weighs the evidence + both opinions → final decision.
+ *  6. Validate the LLM JSON output
+ *  7. Apply the confidence threshold (to the Judge's decision)
  *  8. Hard rule override: GoPlus malicious ALWAYS wins over any agent
- *  9. Return structured FinalDecision (termasuk debate transcript)
+ *  9. Return a structured FinalDecision (including the debate transcript)
  *
  * HARD GUARANTEES:
- * - GoPlus malicious → REJECT regardless of LLM/Judge output
+ * - GoPlus malicious → REJECT regardless of the LLM/Judge output
  * - LLM error / timeout / malformed → fail-safe REJECT
  * - LLM low confidence → fail-safe REJECT
- * - API unavailable ≠ clean (berlaku juga untuk kegagalan tool)
- * - Tool HANYA menambah bukti; tool tidak pernah menentukan eligible/confidence
- * - Advocate TIDAK menghasilkan keputusan — hanya argumen; Judge yang final
- * - Jika Advocate gagal → Judge jalan tanpa argumen (lebih hati-hati)
- * - Jika Judge gagal → fail-safe REJECT
- * - Maksimal LLM call: Investigator (≤2) + Advocate (1) + Judge (1) = ≤4
+ * - API unavailable ≠ clean (this also applies to tool failures)
+ * - Tools ONLY add evidence; tools never decide eligible/confidence
+ * - The Advocate does NOT produce a decision — only arguments; the Judge is final
+ * - If the Advocate fails → the Judge runs without arguments (more cautious)
+ * - If the Judge fails → fail-safe REJECT
+ * - Maximum LLM calls: Investigator (≤2) + Advocate (1) + Judge (1) = ≤4
  *
- * @param sender      EVM address pengirim escrow (0x...)
- * @param recipient   EVM address penerima (0x...)
+ * @param sender      Escrow sender EVM address (0x...)
+ * @param recipient   Recipient EVM address (0x...)
  * @param amountBNB   Transfer amount in BNB (as number)
  */
 export async function runSecurityPipeline(
@@ -180,11 +180,11 @@ export async function runSecurityPipeline(
       escrowId,
       phase: "rules",
       status: "fail",
-      label: "Alamat tidak valid",
+      label: "Invalid address",
       detail: recipient,
     });
     return failSafe(
-      `Format alamat EVM tidak valid: ${recipient}`,
+      `Invalid EVM address format: ${recipient}`,
       "FAIL_INVALID_ADDRESS"
     );
   }
@@ -195,7 +195,7 @@ export async function runSecurityPipeline(
     escrowId,
     phase: "evidence",
     status: "start",
-    label: "Mengumpulkan bukti GoPlus + BscScan",
+    label: "Collecting GoPlus + BscScan evidence",
     data: { recipient, amountBNB, sender },
   });
 
@@ -235,8 +235,8 @@ export async function runSecurityPipeline(
     status: "ok",
     label: `GoPlus ${security.status}`,
     detail:
-      `txCount=${intel.txCount ?? "?"}(${intel.txCountSource}), umur=${intel.walletAgeInDays !== null ? intel.walletAgeInDays.toFixed(1) + "d" : "?"}, ` +
-      `saldo=${intel.balanceBNB !== null ? intel.balanceBNB.toFixed(4) + " BNB" : "?"}` +
+      `txCount=${intel.txCount ?? "?"}(${intel.txCountSource}), age=${intel.walletAgeInDays !== null ? intel.walletAgeInDays.toFixed(1) + "d" : "?"}, ` +
+      `balance=${intel.balanceBNB !== null ? intel.balanceBNB.toFixed(4) + " BNB" : "?"}` +
       (security.riskFlags.length > 0 ? `, flags=[${security.riskFlags.join(", ")}]` : ""),
     data: { goplus: security.status, flags: security.riskFlags },
   });
@@ -250,13 +250,13 @@ export async function runSecurityPipeline(
     status: ruleResult.decision === "REJECT" ? "fail" : "ok",
     label:
       ruleResult.decision === "REJECT"
-        ? `Hard rule TOLAK — ${ruleResult.triggeredRule}`
-        : `Lolos rules → sidang AI (${ruleResult.triggeredRule})`,
+        ? `Hard rule REJECT — ${ruleResult.triggeredRule}`
+        : `Rules passed → AI hearing (${ruleResult.triggeredRule})`,
     detail: ruleResult.reason,
     data: { decision: ruleResult.decision, rule: ruleResult.triggeredRule },
   });
 
-  // ── Step 4: Load agent memory (dipakai penjelasan hard rule & sidang AI) ────
+  // ── Step 4: Load agent memory (used for the hard rule explanation & AI hearing)
   const memory = getAddressMemory(recipient);
   const memoryContext = formatMemoryForPrompt(memory);
 
@@ -272,13 +272,13 @@ export async function runSecurityPipeline(
 
   // ── Step 5: Hard REJECT from rules → generate AI explanation, then stop ────
   if (ruleResult.decision === "REJECT") {
-    console.log(`[Final]   TOLAK (hard rule — ${ruleResult.triggeredRule})`);
+    console.log(`[Final]   REJECT (hard rule — ${ruleResult.triggeredRule})`);
     console.log(`[LLM]     Generating AI explanation for hard rule rejection...`);
     publish({
       escrowId,
       phase: "final",
       status: "start",
-      label: "Menjelaskan penolakan hard rule",
+      label: "Explaining the hard rule rejection",
     });
 
     // Decision is FINAL (REJECT). Only the explanation is AI-generated.
@@ -293,12 +293,12 @@ export async function runSecurityPipeline(
     });
     const finalReason = finalizeReason(explanation, intel, memory);
 
-    console.log(`[Final]   Alasan: ${finalReason}`);
+    console.log(`[Final]   Reason: ${finalReason}`);
     publish({
       escrowId,
       phase: "final",
       status: "done",
-      label: "DITOLAK (hard rule)",
+      label: "REJECTED (hard rule)",
       detail: finalReason,
       data: { eligible: false, decidedBy: "hard_rule" },
     });
@@ -315,20 +315,21 @@ export async function runSecurityPipeline(
   }
 
   // ── Step 6: Call Investigator (with memory context) ──────────────────────────
-  console.log(`[LLM]     Investigator: ${config.OLLAMA_MODEL} via Ollama (dengan memori)...`);
+  console.log(`[LLM]     Investigator: ${config.OLLAMA_MODEL} via Ollama (with memory)...`);
   publish({
     escrowId,
     phase: "investigator",
     status: "start",
-    label: "Investigator menilai kasus",
+    label: "Investigator assessing the case",
     detail: `Model ${config.OLLAMA_MODEL}`,
   });
 
   let investigator: LLMDecision;
   try {
     investigator = await callLLM({ sender, recipient, amountBNB, security, intel, memoryContext });
-    // Baris Fakta juga dipasang di reason Investigator — transkrip sidang yang
-    // dibaca user tetap konsisten walau model melanggar aturan penulisan.
+    // The Facts line is also injected into the Investigator's reason — the hearing
+    // transcript read by users stays consistent even when the model violates the
+    // formatting rules.
     investigator = { ...investigator, reason: finalizeReason(investigator.reason, intel, memory) };
     console.log(
       `[Investigator] eligible=${investigator.eligible} ` +
@@ -340,7 +341,7 @@ export async function runSecurityPipeline(
       escrowId,
       phase: "investigator",
       status: "ok",
-      label: `Investigator: ${investigator.eligible ? "dukung RELEASE" : "dukung REJECT"}`,
+      label: `Investigator: ${investigator.eligible ? "supports RELEASE" : "supports REJECT"}`,
       detail: investigator.reason,
       data: {
         eligible: investigator.eligible,
@@ -354,7 +355,7 @@ export async function runSecurityPipeline(
     console.error(`[LLM]     ERROR: ${msg}`);
     console.log(`[Final]   REJECT (fail-safe — Investigator unavailable/error)`);
     const llmFailReason = finalizeReason(
-      `Analisis Investigator gagal (${msg}). Dana dikembalikan ke pengirim sebagai tindakan fail-safe.`,
+      `The Investigator analysis failed (${msg}). Funds are returned to the sender as a fail-safe action.`,
       intel,
       memory
     );
@@ -362,14 +363,14 @@ export async function runSecurityPipeline(
       escrowId,
       phase: "investigator",
       status: "fail",
-      label: "Investigator gagal",
+      label: "Investigator failed",
       detail: msg,
     });
     publish({
       escrowId,
       phase: "final",
       status: "done",
-      label: "DITOLAK (fail-safe)",
+      label: "REJECTED (fail-safe)",
       detail: llmFailReason,
       data: { eligible: false, decidedBy: "fail_safe" },
     });
@@ -381,10 +382,10 @@ export async function runSecurityPipeline(
     );
   }
 
-  // ── Step 6b: Agentic tool loop (maksimal 1 putaran) ───────────────────────
-  // Investigator menilai bukti belum cukup → meminta data lewat needsData.
-  // Tool dieksekusi murni oleh kode (0 beban Ollama), lalu Investigator dipanggil
-  // SEKALI LAGI dengan bukti tambahan. Setelah ini sidang debate berjalan.
+  // ── Step 6b: Agentic tool loop (at most 1 round) ─────────────────────────
+  // The Investigator judges the evidence insufficient → requests data via needsData.
+  // Tools are executed purely by code (0 Ollama cost), then the Investigator is
+  // called ONCE MORE with the extra evidence. After this the debate hearing runs.
   let toolsUsed: string[] = [];
   let toolResultsBlock: string | undefined;
 
@@ -392,11 +393,11 @@ export async function runSecurityPipeline(
     const { requested, dropped } = sanitizeNeedsData(investigator.needsData);
 
     if (dropped.length > 0) {
-      console.warn(`[Agent]   Tool tidak dikenal diabaikan: ${dropped.join(", ")}`);
+      console.warn(`[Agent]   Unknown tools ignored: ${dropped.join(", ")}`);
     }
 
     if (requested.length > 0) {
-      console.log(`[Agent]   Investigator meminta data: ${requested.join(", ")}`);
+      console.log(`[Agent]   Investigator requests data: ${requested.join(", ")}`);
       publish({
         escrowId,
         phase: "tools",
@@ -406,8 +407,8 @@ export async function runSecurityPipeline(
 
       const exec = await executeTools(requested, { sender, recipient });
       console.log(
-        `[Agent]   Tool selesai: ${exec.succeeded.length} sukses, ` +
-        `${exec.failed.length} gagal` +
+        `[Agent]   Tools finished: ${exec.succeeded.length} succeeded, ` +
+        `${exec.failed.length} failed` +
         (exec.failed.length > 0 ? ` (${exec.failed.join(", ")})` : "")
       );
       publish({
@@ -417,19 +418,19 @@ export async function runSecurityPipeline(
         label:
           exec.succeeded.length > 0
             ? `Tool OK: ${exec.succeeded.join(", ")}`
-            : "Semua tool gagal",
-        detail: exec.failed.length > 0 ? `gagal: ${exec.failed.join(", ")}` : undefined,
+            : "All tools failed",
+        detail: exec.failed.length > 0 ? `failed: ${exec.failed.join(", ")}` : undefined,
         data: { succeeded: exec.succeeded, failed: exec.failed },
       });
 
       if (exec.succeeded.length > 0) {
         toolResultsBlock = exec.block;
-        console.log(`[Agent]   Investigator putaran ke-2 dengan data tambahan...`);
+        console.log(`[Agent]   Investigator second round with additional data...`);
         publish({
           escrowId,
           phase: "investigator",
           status: "start",
-          label: "Investigator putaran ke-2 (bukti tambahan)",
+          label: "Investigator second round (additional evidence)",
         });
         try {
           const followUp = await callLLM({
@@ -457,7 +458,7 @@ export async function runSecurityPipeline(
             escrowId,
             phase: "investigator",
             status: "ok",
-            label: `Investigator (update): ${investigator.eligible ? "dukung RELEASE" : "dukung REJECT"}`,
+            label: `Investigator (update): ${investigator.eligible ? "supports RELEASE" : "supports REJECT"}`,
             detail: investigator.reason,
             data: {
               eligible: investigator.eligible,
@@ -467,37 +468,37 @@ export async function runSecurityPipeline(
           });
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          console.warn(`[Agent]   Putaran ke-2 gagal (${msg}) — memakai penilaian putaran ke-1.`);
+          console.warn(`[Agent]   Second round failed (${msg}) — using the first-round assessment.`);
           publish({
             escrowId,
             phase: "investigator",
             status: "fail",
-            label: "Putaran ke-2 gagal — pakai penilaian awal",
+            label: "Second round failed — using the initial assessment",
             detail: msg,
           });
         }
       } else {
-        console.warn(`[Agent]   Semua tool gagal — memakai penilaian putaran ke-1.`);
+        console.warn(`[Agent]   All tools failed — using the first-round assessment.`);
       }
     }
   }
 
-  // ── Step 6c: MULTI-AGENT DEBATE — Advocate (steelman posisi berkebalikan) ─
+  // ── Step 6c: MULTI-AGENT DEBATE — Advocate (steelman of the opposite position) ─
   const llmInput = { sender, recipient, amountBNB, security, intel, memoryContext };
   let advocate: AdvocateResult | null = null;
 
   try {
     const advPos = investigator.eligible ? "REJECT" : "RELEASE";
     console.log(
-      `[Advocate] Membangun argumen untuk posisi ` +
-      `${advPos} (berkebalikan dari Investigator)...`
+      `[Advocate] Building arguments for position ` +
+      `${advPos} (opposite to the Investigator)...`
     );
     publish({
       escrowId,
       phase: "advocate",
       status: "start",
-      label: `Advocate membela posisi ${advPos}`,
-      detail: "Steelman adversarial sedang disusun…",
+      label: `Advocate arguing for position ${advPos}`,
+      detail: "Building the adversarial steelman…",
     });
     advocate = await callAdvocate(llmInput, investigator, toolResultsBlock);
     console.log(`[Advocate] position=${advocate.position}`);
@@ -512,26 +513,26 @@ export async function runSecurityPipeline(
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.warn(`[Advocate] Gagal (${msg}) — Judge tetap jalan tanpa argumen adversarial.`);
+    console.warn(`[Advocate] Failed (${msg}) — the Judge still runs without adversarial arguments.`);
     publish({
       escrowId,
       phase: "advocate",
       status: "fail",
-      label: "Advocate gagal — Judge lanjut tanpa argumen",
+      label: "Advocate failed — Judge continues without arguments",
       detail: msg,
     });
     advocate = null;
   }
 
-  // ── Step 6d: Judge — keputusan final setelah debate ───────────────────────
+  // ── Step 6d: Judge — final decision after the debate ──────────────────────
   let judge: LLMDecision;
   try {
-    console.log(`[Judge]    Menimbang bukti + Investigator + Advocate...`);
+    console.log(`[Judge]    Weighing the evidence + Investigator + Advocate...`);
     publish({
       escrowId,
       phase: "judge",
       status: "start",
-      label: "Judge menimbang bukti + kedua opini",
+      label: "Judge weighing the evidence + both opinions",
     });
     judge = await callJudge(llmInput, investigator, advocate, toolResultsBlock);
     console.log(
@@ -540,15 +541,15 @@ export async function runSecurityPipeline(
       `riskLevel=${judge.riskLevel}`
     );
     console.log(`[Judge]    Reason: ${judge.reason}`);
-    // Reason Judge yang tampil ke user (transcript + event) selalu lewat
-    // finalizeReason; `judge.reason` mentah tetap dipertahankan untuk dirangkai
-    // ke alasan hold/fail-safe di bawah (agar baris Fakta tidak tertanam 2x).
+    // The Judge's reason shown to the user (transcript + event) always goes
+    // through finalizeReason; the raw `judge.reason` is kept for composing the
+    // hold/fail-safe reasons below (so the Facts line is not embedded twice).
     const judgeReasonDisplay = finalizeReason(judge.reason, intel, memory);
     publish({
       escrowId,
       phase: "judge",
       status: "ok",
-      label: `Judge: ${judge.eligible ? "PUTUS RELEASE" : "PUTUS REJECT"}`,
+      label: `Judge: ${judge.eligible ? "RULING RELEASE" : "RULING REJECT"}`,
       detail: judgeReasonDisplay,
       data: {
         eligible: judge.eligible,
@@ -561,7 +562,7 @@ export async function runSecurityPipeline(
     console.error(`[Judge]    ERROR: ${msg}`);
     console.log(`[Final]    REJECT (fail-safe — Judge unavailable/error)`);
     const judgeFailReason = finalizeReason(
-      `Sidang AI gagal (${msg}). Dana dikembalikan ke pengirim sebagai tindakan fail-safe.`,
+      `The AI hearing failed (${msg}). Funds are returned to the sender as a fail-safe action.`,
       intel,
       memory
     );
@@ -569,14 +570,14 @@ export async function runSecurityPipeline(
       escrowId,
       phase: "judge",
       status: "fail",
-      label: "Judge gagal",
+      label: "Judge failed",
       detail: msg,
     });
     publish({
       escrowId,
       phase: "final",
       status: "done",
-      label: "DITOLAK (fail-safe)",
+      label: "REJECTED (fail-safe)",
       detail: judgeFailReason,
       data: { eligible: false, decidedBy: "fail_safe" },
     });
@@ -620,15 +621,15 @@ export async function runSecurityPipeline(
       `[Final]   REJECT (fail-safe — Judge confidence ${judge.confidence.toFixed(2)} < min ${config.HUMAN_CONF_MIN})`
     );
     const lowConfReason =
-      `Confidence hakim AI (${(judge.confidence * 100).toFixed(0)}%) di bawah ` +
-      `batas minimum (${(config.HUMAN_CONF_MIN * 100).toFixed(0)}%). ` +
-      `Dana dikembalikan ke pengirim sebagai tindakan fail-safe. Analisis Judge: ${judge.reason}`;
+      `The AI judge confidence (${(judge.confidence * 100).toFixed(0)}%) is below ` +
+      `the minimum limit (${(config.HUMAN_CONF_MIN * 100).toFixed(0)}%). ` +
+      `Funds are returned to the sender as a fail-safe action. Judge analysis: ${judge.reason}`;
     const finalReason = finalizeReason(lowConfReason, intel, memory);
     publish({
       escrowId,
       phase: "final",
       status: "done",
-      label: "DITOLAK (confidence rendah)",
+      label: "REJECTED (low confidence)",
       detail: finalReason,
       data: { eligible: false, decidedBy: "fail_safe", confidence: judge.confidence },
     });
@@ -636,7 +637,7 @@ export async function runSecurityPipeline(
   }
 
   // ── Step 8: Hard override check ───────────────────────────────────────────
-  // GoPlus malicious ALWAYS wins. Debate tidak bisa mengalahkan security intel.
+  // GoPlus malicious ALWAYS wins. The debate cannot beat the security intel.
   if (guard.kind === "override_malicious") {
     console.log(
       `[Final]   REJECT (hard override — GoPlus malicious overrides Judge eligible=${judge.eligible})`
@@ -648,14 +649,14 @@ export async function runSecurityPipeline(
       intel,
       memoryContext,
       triggeredRule: "OVERRIDE_GOPLUS_MALICIOUS",
-      ruleContext: `GoPlus mendeteksi sinyal berbahaya [${security.riskFlags.join(", ")}] pada alamat ini. Hard security rule mengalahkan keputusan debate AI.`,
+      ruleContext: `GoPlus detected malicious signals [${security.riskFlags.join(", ")}] on this address. The hard security rule overrides the AI debate decision.`,
     });
     const finalReason = finalizeReason(overrideExplanation, intel, memory);
     publish({
       escrowId,
       phase: "final",
       status: "done",
-      label: "DITOLAK (override GoPlus)",
+      label: "REJECTED (GoPlus override)",
       detail: finalReason,
       data: { eligible: false, decidedBy: "hard_rule" },
     });
@@ -672,11 +673,11 @@ export async function runSecurityPipeline(
     };
   }
 
-  // ── Step 8b: Human-in-the-loop HOLD (jangan submit on-chain) ──────────────
+  // ── Step 8b: Human-in-the-loop HOLD (do NOT submit on-chain) ───────────────
   if (guard.kind === "needs_human") {
     console.log(`[Final]   HOLD (human review — ${guard.reason})`);
     const finalReason = finalizeReason(
-      `${guard.reason} Rekomendasi AI: ${judge.eligible ? "RELEASE" : "REJECT"}. ${judge.reason}`,
+      `${guard.reason} AI recommendation: ${judge.eligible ? "RELEASE" : "REJECT"}. ${judge.reason}`,
       intel,
       memory
     );
@@ -684,7 +685,7 @@ export async function runSecurityPipeline(
       escrowId,
       phase: "human",
       status: "start",
-      label: "Menunggu veto manusia",
+      label: "Waiting for human veto",
       detail: guard.reason,
       data: {
         aiRecommendation: judge.eligible,
@@ -696,7 +697,7 @@ export async function runSecurityPipeline(
       escrowId,
       phase: "final",
       status: "start",
-      label: "HOLD — bukan putusan final",
+      label: "HOLD — not a final ruling",
       detail: finalReason,
       data: {
         needsHuman: true,
@@ -728,7 +729,7 @@ export async function runSecurityPipeline(
     escrowId,
     phase: "final",
     status: "done",
-    label: judge.eligible ? "DITERUSKAN" : "DIKEMBALIKAN",
+    label: judge.eligible ? "RELEASED" : "RETURNED",
     detail: finalReason,
     data: {
       eligible: judge.eligible,
@@ -752,12 +753,13 @@ export async function runSecurityPipeline(
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 /**
- * Finalisasi reason yang ditampilkan ke user: (1) koreksi deterministik frasa
- * yang bertentangan dengan data, (2) sisipkan baris "Fakta" dari KODE (bukan
- * dari model) — dijamin memuat jumlah transaksi (dengan sumbernya) + riwayat
- * AEGIS, apa pun output LLM. Reason tetap dikirim on-chain (dipotong bila > batas).
+ * Finalize the reason shown to the user: (1) deterministically correct phrases
+ * that contradict the data, (2) insert a "Facts" line from CODE (not from
+ * the model) — guaranteed to contain the transaction count (with its source)
+ * plus the AEGIS history, whatever the LLM outputs. The reason is still sent
+ * on-chain (truncated when over the limit).
  *
- * Diekspor agar bisa diuji langsung (smoke test) tanpa menjalankan pipeline penuh.
+ * Exported so it can be tested directly (smoke test) without running the full pipeline.
  */
 export function finalizeReason(
   reason: string,
@@ -766,63 +768,70 @@ export function finalizeReason(
 ): string {
   const txPart =
     intel.txCount === null
-      ? "jumlah transaksi = tidak diketahui"
+      ? "transaction count = unknown"
       : intel.txCountSource === "explorer"
-        ? `transaksi on-chain akun = ${intel.txCount} (explorer, masuk+keluar)`
-        : `transaksi keluar = ${intel.txCount} (nonce RPC — transaksi masuk tidak terhitung; explorer tidak tersedia)`;
+        ? `on-chain transactions for the account = ${intel.txCount} (explorer, in+out)`
+        : `outgoing transactions = ${intel.txCount} (RPC nonce — incoming transactions are not counted; the explorer is unavailable)`;
   const memori = formatMemoryFacts(memory);
   const body = normalizeReasonFacts(reason, intel, memory);
-  // Baris Fakta dipasang di AWAL: reason dikirim on-chain lewat truncateReason()
-  // (batas MAX_REASON_BYTES ~1 KB) — kalau di belakang, justru bagian pertama
-  // yang terpotong. Fungsi ini idempotent (baris Fakta lama dibuang dulu).
-  return `Fakta: ${txPart} · riwayat AEGIS = ${memori}\n${body}`;
+  // The Facts line is placed at the START: the reason is sent on-chain via
+  // truncateReason() (MAX_REASON_BYTES limit ~1 KB) — if it were at the end,
+  // the first part would be the one truncated. This function is idempotent
+  // (an old Facts line is discarded first).
+  return `Facts: ${txPart} · AEGIS history = ${memori}\n${body}`;
 }
 
 /**
- * Koreksi deterministik terhadap frasa reason yang BERTENTANGAN dengan data
- * (model 8B kadang tetap melanggar aturan prompt). Hanya menyentuh pola yang
- * salah secara obyektif:
- *  - txCount bersumber nonce RPC (transaksi keluar) tidak boleh ditulis
- *    "N transaksi on-chain";
- *  - memori AEGIS dengan N>0 tidak boleh ditulis "evaluasi pertama".
- * Baris "Fakta" lama (bila reason sudah pernah difinalisasi) ikut dibuang agar
- * finalizeReason aman dipanggil berulang.
+ * Deterministic correction of reason phrases that CONTRADICT the data
+ * (the 8B model sometimes still violates the prompt rules). Only patterns that
+ * are objectively wrong are touched:
+ *  - a txCount sourced from the RPC nonce (outgoing transactions) must not be
+ *    written as "N on-chain transactions";
+ *  - AEGIS memory with N>0 must not be written as "first evaluation".
+ * An old "Facts" line (if the reason was already finalized) is discarded too, so
+ * finalizeReason is safe to call repeatedly.
  */
 function normalizeReasonFacts(
   reason: string,
   intel: OnChainIntel,
   memory: AddressMemory
 ): string {
-  let out = reason.replace(/[ \t]*Fakta: [^\n]*/g, " ");
+  let out = reason.replace(/[ \t]*Facts: [^\n]*/g, " ");
 
   if (intel.txCountSource === "rpc_nonce" && intel.txCount !== null) {
     const n = intel.txCount;
     out = out.replace(
-      new RegExp(`\\b${n}\\s+transaksi on-chain\\b`, "gi"),
-      `${n} transaksi keluar (nonce RPC)`
+      new RegExp(`\\b${n}\\s+on-chain transactions\\b`, "gi"),
+      `${n} outgoing transactions (RPC nonce)`
     );
     out = out.replace(
-      new RegExp(`\\briwayat transaksi\\s+${n}\\b`, "gi"),
-      `riwayat transaksi keluar ${n}`
+      new RegExp(`\\btransaction history\\s+${n}\\b`, "gi"),
+      `${n} outgoing transactions`
     );
-    out = out.replace(/\btanpa transaksi on-chain\b/gi, "tanpa transaksi keluar (nonce RPC)");
+    out = out.replace(
+      /\bno on-chain transactions\b/gi,
+      "no outgoing transactions (RPC nonce)"
+    );
   } else if (intel.txCount === null) {
-    out = out.replace(/\b\d+\s+transaksi on-chain\b/gi, "jumlah transaksi tidak diketahui");
+    out = out.replace(
+      /\b\d+\s+on-chain transactions\b/gi,
+      "transaction count unknown"
+    );
   }
 
   if (memory.totalSeen > 0) {
     const seen = memory.totalSeen;
     out = out.replace(
-      /(^|[\s.,;:)])(?:dan\s+)?belum pernah (?:bertransaksi(?:\s+via\s+AEGIS)?|dievaluasi)(?:\s*\(?\s*evaluasi pertama\s*\)?)?/gi,
-      (_m, pre: string) => `${pre}sudah ${seen}x bertransaksi via AEGIS`
+      /(^|[\s.,;:)])(?:and\s+)?(?:has\s+)?never (?:transacted(?:\s+via\s+AEGIS)?|been evaluated)(?:\s*\(?\s*first evaluation\s*\)?)?/gi,
+      (_m, pre: string) => `${pre}has transacted via AEGIS ${seen}x`
     );
     out = out.replace(
-      /(^|[\s.,;:)])(?:dan\s+)?belum pernah dievaluasi/gi,
-      (_m, pre: string) => `${pre}sudah ${seen}x dievaluasi`
+      /(^|[\s.,;:)])(?:and\s+)?never been evaluated/gi,
+      (_m, pre: string) => `${pre}has been evaluated ${seen}x`
     );
     out = out.replace(
-      /([ \t]*)\(?\s*evaluasi pertama\s*\)?/gi,
-      (_m, sp: string) => `${sp}evaluasi ke-${seen} AEGIS`
+      /([ \t]*)\(?\s*first evaluation\s*\)?/gi,
+      (_m, sp: string) => `${sp}AEGIS evaluation #${seen}`
     );
   }
 

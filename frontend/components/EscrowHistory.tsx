@@ -60,7 +60,7 @@ function useEscrowHistory(limit: number, address: string | undefined) {
                     ? json.total
                     : (json.data ?? []).length,
               }
-            : { addr, rows: [], total: 0, error: json.error ?? "Permintaan ditolak backend." }
+            : { addr, rows: [], total: 0, error: json.error ?? "The backend rejected the request." }
         );
       } catch (err) {
         if (!alive) return;
@@ -97,16 +97,16 @@ export default function EscrowHistory({ address: addressOverride }: { address?: 
     <section className="card overflow-hidden">
       <div className="card-head">
         <div>
-          <p className="eyebrow">Catatan On-Chain</p>
-          <p className="font-display mt-1 text-xl text-ink">Riwayat Transaksi & Escrow</p>
+          <p className="eyebrow">On-Chain Records</p>
+          <p className="font-display mt-1 text-xl text-ink">Transaction &amp; Escrow History</p>
           <p className="text-muted mt-1 text-xs">
             {isFiltered
-              ? `Semua transfer yang melibatkan alamat ${truncateAddress(address ?? "")}.`
-              : "Semua transfer yang melibatkan dompet terhubung."}
+              ? `Every transfer involving address ${truncateAddress(address ?? "")}.`
+              : "Every transfer involving the connected wallet."}
           </p>
         </div>
         {!loading && !error && total > 0 && (
-          <span className="badge">{total} Transaksi</span>
+          <span className="badge">{total} Transactions</span>
         )}
       </div>
 
@@ -120,16 +120,16 @@ export default function EscrowHistory({ address: addressOverride }: { address?: 
 
         {!address ? (
           <div className="empty-note">
-            Sambungkan dompet Anda — atau cari alamat mana pun di atas — untuk melihat riwayat transfer.
+            Connect your wallet — or search for any address above — to see the transfer history.
           </div>
         ) : loading ? (
           <div className="text-muted flex items-center gap-2 text-sm py-2">
             <span className="pulse-bronze h-2 w-2 rounded-full bg-[var(--bronze)]" />
-            Memuat riwayat transaksi…
+            Loading transaction history…
           </div>
         ) : decisions.length === 0 && !error ? (
           <div className="empty-note">
-            Belum ada transaksi yang tercatat untuk alamat ini. Kirim token untuk menguji perlindungan Aegis.
+            No transactions recorded for this address yet. Send a token to test Aegis protection.
           </div>
         ) : decisions.length === 0 ? null : (
           <>
@@ -142,10 +142,10 @@ export default function EscrowHistory({ address: addressOverride }: { address?: 
                   ? "var(--safe)"
                   : "var(--danger)";
                 const label = pending
-                  ? "Menunggu Tinjauan Manual"
+                  ? "Awaiting Manual Review"
                   : d.eligible
-                  ? "Berhasil Diteruskan"
-                  : "Dibatalkan & Dikembalikan";
+                  ? "Successfully Forwarded"
+                  : "Cancelled &amp; Refunded";
                 const expanded = expandedId === d.id;
                 const longReason = d.reasoning.length > 90;
 
@@ -163,11 +163,11 @@ export default function EscrowHistory({ address: addressOverride }: { address?: 
                         </span>
                       </p>
                       <span className="text-muted text-xs whitespace-nowrap">
-                        Keyakinan: {Math.round(d.confidence * 100)}%
+                        Confidence: {Math.round(d.confidence * 100)}%
                       </span>
                     </div>
                     <p className="text-muted mt-1 text-xs">
-                      Tujuan: <span className="font-mono text-ink">{truncateAddress(d.recipient)}</span>
+                      To: <span className="font-mono text-ink">{truncateAddress(d.recipient)}</span>
                       {d.created_at && <> · {formatTimestamp(d.created_at)}</>}
                     </p>
                     <button
@@ -185,7 +185,7 @@ export default function EscrowHistory({ address: addressOverride }: { address?: 
                       </span>
                       {!expanded && longReason && (
                         <span className="text-bronze mt-1 block text-[11px] font-semibold">
-                          Lihat selengkapnya ▾
+                          See more ▾
                         </span>
                       )}
                     </button>
@@ -201,10 +201,10 @@ export default function EscrowHistory({ address: addressOverride }: { address?: 
                   className="btn btn-ghost btn-sm"
                   onClick={() => setVisibleCount((c) => c + PAGE_SIZE)}
                 >
-                  Muat Lebih Banyak
+                  Load More
                 </button>
                 <p className="text-muted text-[11px]">
-                  Menampilkan {decisions.length} dari {total} transaksi
+                  Showing {decisions.length} of {total} transactions
                 </p>
               </div>
             )}

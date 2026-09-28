@@ -19,7 +19,7 @@ const PAGE_SIZE = 5;
 function formatMs(ts: number): string {
   const d = new Date(ts);
   if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleString("id-ID", {
+  return d.toLocaleString("en-US", {
     day: "numeric",
     month: "short",
     hour: "2-digit",
@@ -39,11 +39,11 @@ function summarize(s: DebateSession) {
   const tone = !finalEv ? "bronze" : finalEv.data?.eligible === true ? "safe" : "danger";
   const label = !finalEv
     ? hasVote
-      ? "Menunggu Tinjauan Manual"
-      : "Sedang Berlangsung"
+      ? "Awaiting Manual Review"
+      : "In Progress"
     : finalEv.data?.eligible === true
-    ? "Verifikasi Aman"
-    : "Dibatalkan / Berisiko";
+    ? "Verification Safe"
+    : "Cancelled / Risky";
   const phases = new Set(s.events.map((e) => e.phase));
   return { finalEv, confidence, tone, label, stepCount: s.events.length, phaseCount: phases.size };
 }
@@ -102,7 +102,7 @@ export default function DebateHistory({ address: addressOverride }: { address?: 
             addr,
             rows: [],
             total: 0,
-            error: json.error ?? "Permintaan ditolak backend.",
+            error: json.error ?? "The backend rejected the request.",
           });
         }
       } catch (err) {
@@ -125,15 +125,15 @@ export default function DebateHistory({ address: addressOverride }: { address?: 
     <section className="card overflow-hidden">
       <div className="card-head">
         <div>
-          <p className="eyebrow">Catatan Lengkap</p>
-          <p className="font-display mt-1 text-xl text-ink">Arsip Verifikasi Transaksi</p>
+          <p className="eyebrow">Full Records</p>
+          <p className="font-display mt-1 text-xl text-ink">Transaction Verification Archive</p>
           <p className="text-muted mt-1 text-xs">
             {isFiltered
-              ? `Rekaman tahapan verifikasi untuk alamat ${truncateAddress(address ?? "")}.`
-              : "Rekaman tahapan verifikasi untuk transaksi dari dompet Anda."}
+              ? `Stage-by-stage verification records for address ${truncateAddress(address ?? "")}.`
+              : "Stage-by-stage verification records for transactions from your wallet."}
           </p>
         </div>
-        {!loading && !error && total > 0 && <span className="badge">{total} Sesi</span>}
+        {!loading && !error && total > 0 && <span className="badge">{total} Sessions</span>}
       </div>
 
       <div className="card-pad flex flex-col gap-3">
@@ -146,16 +146,16 @@ export default function DebateHistory({ address: addressOverride }: { address?: 
 
         {!address ? (
           <div className="empty-note">
-            Sambungkan dompet Anda — atau cari alamat tertentu di atas — untuk melihat arsip verifikasi.
+            Connect your wallet — or search for a specific address above — to see the verification archive.
           </div>
         ) : loading && sessions.length === 0 ? (
           <div className="text-muted flex items-center gap-2 text-sm py-2">
             <span className="pulse-bronze h-2 w-2 rounded-full bg-[var(--bronze)]" />
-            Memuat arsip verifikasi…
+            Loading the verification archive…
           </div>
         ) : sessions.length === 0 && !error ? (
           <div className="empty-note">
-            Belum ada arsip verifikasi untuk alamat ini. Kirim token pertama Anda untuk memulai.
+            No verification records for this address yet. Send your first token to get started.
           </div>
         ) : (
           sessions.map((s) => {
@@ -191,7 +191,7 @@ export default function DebateHistory({ address: addressOverride }: { address?: 
                   <div className="flex shrink-0 items-center gap-3">
                     {info.confidence !== null && (
                       <span className="text-muted text-xs font-medium">
-                        {Math.round(info.confidence * 100)}% Yakin
+                        {Math.round(info.confidence * 100)}% confidence
                       </span>
                     )}
                     <span
@@ -202,7 +202,7 @@ export default function DebateHistory({ address: addressOverride }: { address?: 
                         background: `color-mix(in srgb, ${toneColor} 12%, var(--surface-glass))`,
                       }}
                     >
-                      {info.phaseCount} Tahap · {info.stepCount} Langkah
+                      {info.phaseCount} Stages · {info.stepCount} Steps
                     </span>
                     <span className="text-muted text-xs font-bold" aria-hidden>
                       {expanded ? "▴" : "▾"}
@@ -234,10 +234,10 @@ export default function DebateHistory({ address: addressOverride }: { address?: 
               className="btn btn-ghost btn-sm"
               onClick={() => setVisibleCount((c) => c + PAGE_SIZE)}
             >
-              Muat Lebih Banyak
+              Load More
             </button>
             <p className="text-muted text-[11px]">
-              Menampilkan {sessions.length} dari {total} sesi
+              Showing {sessions.length} of {total} sessions
             </p>
           </div>
         )}

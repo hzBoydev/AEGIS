@@ -17,16 +17,16 @@ export interface HardRuleResult {
 }
 
 /**
- * Deskripsi jumlah transaksi yang JUJUR terhadap sumbernya.
- * Nonce RPC hanya menghitung transaksi keluar — menulisnya sebagai
- * "N transaksi on-chain" menyesatkan untuk akun yang hanya menerima.
+ * Description of the transaction count that is HONEST about its source.
+ * The RPC nonce only counts outgoing transactions — describing it as
+ * "N on-chain transactions" is misleading for receive-only accounts.
  */
 function describeActivity(intel: OnChainIntel, txCount: number): string {
-  if (intel.txCount === null) return "jumlah transaksi tidak diketahui";
+  if (intel.txCount === null) return "transaction count unknown";
   if (intel.txCountSource === "rpc_nonce") {
-    return `${txCount} transaksi keluar (nonce; transaksi masuk tidak terhitung)`;
+    return `${txCount} outgoing transactions (nonce; incoming transactions not counted)`;
   }
-  return `${txCount} transaksi (explorer)`;
+  return `${txCount} transactions (explorer)`;
 }
 
 // ── Rule Engine ───────────────────────────────────────────────────────────────
@@ -61,7 +61,7 @@ export function runRules(
     const flagList = security.riskFlags.join(", ");
     return {
       decision: "REJECT",
-      reason: `Alamat ini terdeteksi berbahaya oleh GoPlus Security Intelligence. Flag yang ditemukan: ${flagList}.`,
+      reason: `This address was flagged as malicious by GoPlus Security Intelligence. Flags found: ${flagList}.`,
       triggeredRule: "RULE_1_GOPLUS_MALICIOUS",
     };
   }
@@ -70,7 +70,7 @@ export function runRules(
   if (security.status === "malicious") {
     return {
       decision: "REJECT",
-      reason: "Alamat ini terdeteksi berbahaya oleh GoPlus Security Intelligence.",
+      reason: "This address was flagged as malicious by GoPlus Security Intelligence.",
       triggeredRule: "RULE_1B_GOPLUS_MALICIOUS_NO_FLAGS",
     };
   }
@@ -90,40 +90,40 @@ export function runRules(
     if (phishingFlags.length > 0) {
       return {
         decision: "REJECT",
-        reason: `Alamat ini memiliki label aktivitas berbahaya eksplisit dari GoPlus: ${phishingFlags.join(", ")}. Transfer dibatalkan.`,
+        reason: `This address carries explicit malicious activity labels from GoPlus: ${phishingFlags.join(", ")}. The transfer is cancelled.`,
         triggeredRule: "RULE_8_GOPLUS_PHISHING_FLAGS",
       };
     }
   }
 
   // ── Rule 6: Smart contract receiver ──────────────────────────────────────
-  // Transfer BNB langsung ke contract address sangat jarang untuk use case
-  // normal. Bisa jadi contract jebakan (honeypot), drainer, atau scam contract.
+  // Sending BNB directly to a contract address is extremely rare for a normal
+  // use case. It could be a honeypot contract, a drainer, or a scam contract.
   if (intel.isContract) {
     return {
       decision: "REJECT",
       reason:
-        "Alamat tujuan adalah smart contract, bukan wallet EOA. " +
-        "Transfer BNB langsung ke contract tidak lazim dan berisiko tinggi " +
-        "(potensi honeypot, drainer, atau scam contract).",
+        "The destination address is a smart contract, not an EOA wallet. " +
+        "A direct BNB transfer to a contract is unusual and highly risky " +
+        "(potential honeypot, drainer, or scam contract).",
       triggeredRule: "RULE_6_CONTRACT_RECEIVER",
     };
   }
 
   // ── Rule 7: Zero-balance wallet + significant amount → REJECT ─────────────
-  // Wallet dengan saldo 0 BNB yang langsung menerima transfer signifikan
-  // merupakan indikator dompet baru yang dibuat spesifik untuk fraud/scam.
-  // Berbeda dengan Rule 2 (fokus umur); Rule 7 fokus pada saldo nol.
+  // A wallet with a 0 BNB balance that directly receives a significant transfer
+  // is an indicator of a wallet created specifically for fraud/scam.
+  // Unlike Rule 2 (which focuses on age); Rule 7 focuses on a zero balance.
   const isSignificantAmount = amountBNB >= config.SIGNIFICANT_TRANSFER_BNB;
   if (intel.balanceBNB !== null && intel.balanceBNB === 0 && isSignificantAmount) {
     return {
       decision: "REJECT",
       reason: [
-        `Wallet tujuan memiliki saldo 0 BNB`,
-        `dan akan menerima transfer sebesar ${amountBNB} BNB`,
-        `(batas signifikan: >= ${config.SIGNIFICANT_TRANSFER_BNB} BNB).`,
-        `Wallet berisi nol yang langsung menerima transfer besar adalah`,
-        `indikator kuat dompet baru yang disiapkan untuk fraud.`,
+        `The destination wallet has a balance of 0 BNB`,
+        `and is about to receive a transfer of ${amountBNB} BNB`,
+        `(significant threshold: >= ${config.SIGNIFICANT_TRANSFER_BNB} BNB).`,
+        `An empty wallet directly receiving a large transfer is a`,
+        `strong indicator of a new wallet prepared for fraud.`,
       ].join(" "),
       triggeredRule: "RULE_7_ZERO_BALANCE_SIGNIFICANT_AMOUNT",
     };
@@ -141,13 +141,13 @@ export function runRules(
     return {
       decision: "REJECT",
       reason: [
-        `Wallet sangat baru (umur: ${formatAge(intel.walletAgeInDays)},`,
-        `batas: < ${config.NEW_WALLET_DAYS} hari),`,
-        `aktivitas tercatat sangat rendah (${describeActivity(intel, txCount)},`,
-        `batas: <= ${config.LOW_TX_COUNT_THRESHOLD}),`,
-        `dan menerima transfer dalam jumlah cukup besar sebesar ${amountBNB} BNB`,
-        `(batas: >= ${config.SIGNIFICANT_TRANSFER_BNB} BNB).`,
-        `Kombinasi ini menunjukkan profil risiko tinggi.`,
+        `Very new wallet (age: ${formatAge(intel.walletAgeInDays)},`,
+        `threshold: < ${config.NEW_WALLET_DAYS} days),`,
+        `very low recorded activity (${describeActivity(intel, txCount)},`,
+        `threshold: <= ${config.LOW_TX_COUNT_THRESHOLD}),`,
+        `receiving a fairly large transfer of ${amountBNB} BNB`,
+        `(threshold: >= ${config.SIGNIFICANT_TRANSFER_BNB} BNB).`,
+        `This combination indicates a high-risk profile.`,
       ].join(" "),
       triggeredRule: "RULE_2_NEW_WALLET_SIGNIFICANT_AMOUNT",
     };
@@ -159,10 +159,10 @@ export function runRules(
     return {
       decision: "NEEDS_LLM",
       reason: [
-        `Wallet baru (umur: ${formatAge(intel.walletAgeInDays)})`,
-        `dengan aktivitas tercatat rendah (${describeActivity(intel, txCount)}).`,
-        `Jumlah transfer di bawah batas signifikan (${amountBNB} BNB < ${config.SIGNIFICANT_TRANSFER_BNB} BNB).`,
-        `Diteruskan ke LLM untuk penilaian kontekstual.`,
+        `New wallet (age: ${formatAge(intel.walletAgeInDays)})`,
+        `with low recorded activity (${describeActivity(intel, txCount)}).`,
+        `The transfer amount is below the significant threshold (${amountBNB} BNB < ${config.SIGNIFICANT_TRANSFER_BNB} BNB).`,
+        `Forwarded to the LLM for contextual assessment.`,
       ].join(" "),
       triggeredRule: "RULE_3_NEW_WALLET_SMALL_AMOUNT",
     };
@@ -174,8 +174,8 @@ export function runRules(
     return {
       decision: "NEEDS_LLM",
       reason:
-        "Layanan keamanan GoPlus sedang tidak tersedia. " +
-        "Status keamanan tidak dapat dikonfirmasi. Diteruskan ke LLM dengan informasi ketidaktersediaan ini.",
+        "The GoPlus security service is currently unavailable. " +
+        "The security status could not be confirmed. Forwarded to the LLM with this unavailability information.",
       triggeredRule: "RULE_4_GOPLUS_UNAVAILABLE",
     };
   }
@@ -185,31 +185,31 @@ export function runRules(
     return {
       decision: "NEEDS_LLM",
       reason:
-        "Layanan on-chain BscScan sedang tidak tersedia. " +
-        "Data on-chain tidak dapat diverifikasi. Diteruskan ke LLM.",
+        "The BscScan on-chain service is currently unavailable. " +
+        "The on-chain data could not be verified. Forwarded to the LLM.",
       triggeredRule: "RULE_5_BSCSCAN_UNAVAILABLE",
     };
   }
 
   // ── Rule 9: Very large transfer (any wallet) → escalate to LLM ───────────
-  // Bahkan ke wallet "bersih" sekalipun, transfer sangat besar perlu validasi
-  // kontekstual dari LLM. Threshold dikonfigurasi via VERY_LARGE_TRANSFER_BNB.
+  // Even for a "clean" wallet, a very large transfer needs contextual
+  // validation from the LLM. Threshold configured via VERY_LARGE_TRANSFER_BNB.
   if (amountBNB >= config.VERY_LARGE_TRANSFER_BNB) {
     return {
       decision: "NEEDS_LLM",
       reason: [
-        `Transfer sebesar ${amountBNB} BNB melampaui batas transfer sangat besar`,
+        `A transfer of ${amountBNB} BNB exceeds the very large transfer threshold`,
         `(${config.VERY_LARGE_TRANSFER_BNB} BNB).`,
-        `Meskipun tidak ada sinyal berbahaya eksplisit, jumlah ini memerlukan`,
-        `validasi kontekstual tambahan dari LLM.`,
+        `Although there is no explicit malicious signal, this amount requires`,
+        `additional contextual validation from the LLM.`,
       ].join(" "),
       triggeredRule: "RULE_9_VERY_LARGE_TRANSFER",
     };
   }
 
   // ── Rule 10: Medium-age wallet + low activity + significant amount → LLM ──
-  // Wallet berumur antara NEW_WALLET_DAYS dan MEDIUM_WALLET_DAYS dengan
-  // transaksi sedikit tetap suspicious meskipun tidak cukup untuk hard REJECT.
+  // A wallet aged between NEW_WALLET_DAYS and MEDIUM_WALLET_DAYS with few
+  // transactions stays suspicious even though it is not enough for a hard REJECT.
   const walletAge = intel.walletAgeInDays;
   const isMediumAgeWallet =
     walletAge !== null &&
@@ -221,11 +221,11 @@ export function runRules(
     return {
       decision: "NEEDS_LLM",
       reason: [
-        `Wallet berumur ${formatAge(walletAge)} (kategori menengah:`,
-        `${config.NEW_WALLET_DAYS}–${config.MEDIUM_WALLET_DAYS} hari)`,
-        `dengan aktivitas tercatat rendah (${describeActivity(intel, txCount)}, batas <= ${config.MEDIUM_TX_THRESHOLD})`,
-        `dan menerima transfer ${amountBNB} BNB (>= ${config.SIGNIFICANT_TRANSFER_BNB} BNB).`,
-        `Profil semi-baru dengan aktivitas minimal memerlukan evaluasi LLM.`,
+        `Wallet aged ${formatAge(walletAge)} (medium category:`,
+        `${config.NEW_WALLET_DAYS}–${config.MEDIUM_WALLET_DAYS} days)`,
+        `with low recorded activity (${describeActivity(intel, txCount)}, threshold <= ${config.MEDIUM_TX_THRESHOLD})`,
+        `and receiving a transfer of ${amountBNB} BNB (>= ${config.SIGNIFICANT_TRANSFER_BNB} BNB).`,
+        `A semi-new profile with minimal activity requires an LLM evaluation.`,
       ].join(" "),
       triggeredRule: "RULE_10_MEDIUM_WALLET_LOW_ACTIVITY",
     };

@@ -17,13 +17,13 @@ const inter = Inter({
 
 export const metadata: Metadata = {
   title: "AEGIS",
-  description: "AI Agent yang menjaga keamanan transfer crypto secara otonom",
+  description: "AI agent that autonomously guards the security of crypto transfers",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html
-      lang="id"
+      lang="en"
       className={`${playfair.variable} ${inter.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col">

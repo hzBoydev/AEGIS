@@ -25,13 +25,13 @@ export default function AddressFilter({
     <div className="mb-3.5 flex flex-col gap-1.5">
       <div className="flex flex-wrap items-center gap-2">
         <label htmlFor={id} className="field-label mb-0 shrink-0 font-medium text-xs">
-          Filter Alamat:
+          Address Filter:
         </label>
         <input
           id={id}
           type="text"
           className="field min-w-0 flex-1 py-2 px-3 text-xs font-mono"
-          placeholder="Cari alamat dompet mana pun (0x...)"
+          placeholder="Search any wallet address (0x...)"
           value={value}
           onChange={(e) => onChange(e.target.value)}
           autoComplete="off"
@@ -43,25 +43,25 @@ export default function AddressFilter({
           onClick={() => onChange("")}
           disabled={!filtered}
         >
-          Dompet Terhubung
+          Connected Wallet
         </button>
       </div>
 
       <p className="text-muted text-[11px]" role="status">
         {invalid ? (
           <span className="text-danger font-semibold">
-            Format alamat tidak valid — gunakan format 0x dengan 40 karakter hex.
+            Invalid address format — use a 0x address with 40 hex characters.
           </span>
         ) : filtered ? (
           <>
-            Menampilkan catatan untuk alamat <span className="font-mono font-semibold text-ink">{truncateAddress(trimmed)}</span> (Dapat mencari alamat publik siapa pun).
+            Showing records for address <span className="font-mono font-semibold text-ink">{truncateAddress(trimmed)}</span> (you can look up any public address).
           </>
         ) : target ? (
           <>
-            Menampilkan data untuk dompet terhubung: <span className="font-mono font-semibold text-ink">{truncateAddress(target)}</span>.
+            Showing data for the connected wallet: <span className="font-mono font-semibold text-ink">{truncateAddress(target)}</span>.
           </>
         ) : (
-          <>Sambungkan dompet atau ketik alamat di atas untuk melihat data transaksi.</>
+          <>Connect a wallet or type an address above to view transaction data.</>
         )}
       </p>
     </div>
