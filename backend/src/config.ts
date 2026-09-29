@@ -58,18 +58,43 @@ const GOPLUS_API_KEY = process.env.GOPLUS_API_KEY ?? "";
 const GOPLUS_TIMEOUT_MS = Number(process.env.GOPLUS_TIMEOUT_MS ?? 5_000);
 
 /**
- * DEMO/TESTING ONLY — simulates malicious flags for specific addresses.
- * GoPlus has no history for freshly created testnet addresses, so for the demo
- * we need a fake list of "bad" addresses.
- * Set GOPLUS_SIMULATE=false in production → GoPlus is queried as-is.
+ * Chains queried for address reputation.
+ *
+ * Why two chains: the escrow lives on BSC **Testnet** (97), but GoPlus's threat
+ * intelligence is built from **mainnet** (56) activity. Querying only 56 means
+ * every testnet address answers "CLEAN" and the signal carries almost no
+ * information; querying only 97 means GoPlus has almost no data for chain 97.
+ * Querying both and merging gives: mainnet reputation for addresses seen on
+ * mainnet, plus any testnet-local flags.
+ *
+ * An address is reported malicious when EITHER chain reports a flag.
  */
-const GOPLUS_SIMULATE =
-  (process.env.GOPLUS_SIMULATE ?? "true").toLowerCase() !== "false";
+const GOPLUS_CHAIN_IDS = (process.env.GOPLUS_CHAIN_IDS ?? "56,97")
+  .split(",")
+  .map((s) => s.trim())
+  .filter((s) => s !== "");
 
 /**
- * Additional addresses (comma-separated) treated as malicious while simulation is on.
- * Added to the built-in demo list in goplusChecker.ts — no code edits needed.
- * Example: GOPLUS_SIMULATED_ADDRESSES=0xabc...,0xdef...
+ * DEMO/TESTING ONLY — simulates malicious flags for a USER-SUPPLIED address list.
+ *
+ * SECURITY POSTURE: this is OFF by default and there is NO built-in list of fake
+ * addresses. A hardcoded demo list made aegisChecker report fabricated
+ * "GoPlus detections" that never came from GoPlus — unacceptable for an
+ * auditable security system, because the DB/UI would present simulated output as
+ * real threat intelligence.
+ *
+ * If you turn it on you MUST supply the addresses yourself:
+ *   GOPLUS_SIMULATE=true
+ *   GOPLUS_SIMULATED_ADDRESSES=0x<mainnet address with a real GoPlus hit>,...
+ * Every simulated hit is tagged `simulated: true` in the result and logged with
+ * a loud warning so it can never be mistaken for real intelligence.
+ */
+const GOPLUS_SIMULATE =
+  (process.env.GOPLUS_SIMULATE ?? "false").toLowerCase() === "true";
+
+/**
+ * Addresses (comma-separated) reported as malicious while simulation is on.
+ * With simulation OFF this list is ignored entirely.
  */
 const GOPLUS_SIMULATED_ADDRESSES = process.env.GOPLUS_SIMULATED_ADDRESSES ?? "";
 
@@ -81,16 +106,13 @@ const BSCSCAN_API_KEY = process.env.BSCSCAN_API_KEY ?? "";
 const BSCSCAN_TIMEOUT_MS = Number(process.env.BSCSCAN_TIMEOUT_MS ?? 8_000);
 
 // ── Rule Engine Security Parameters ──────────────────────────────────────────
-/**
- * Wallet age threshold (in days) for the "new wallet" classification.
- * MVP/hackathon parameter – tune for production.
- */
-const NEW_WALLET_DAYS = Number(process.env.NEW_WALLET_DAYS ?? 1);
-
-/**
- * Wallets with txCount <= this value are classified as low-activity.
- */
-const LOW_TX_COUNT_THRESHOLD = Number(process.env.LOW_TX_COUNT_THRESHOLD ?? 2);
+// NOTE: the age/activity thresholds that used to live here (NEW_WALLET_DAYS,
+// LOW_TX_COUNT_THRESHOLD, MEDIUM_WALLET_DAYS, MEDIUM_TX_THRESHOLD) were REMOVED.
+// They were inputs to rules that read `walletAgeInDays` and an explorer tx list —
+// neither exists on BSC testnet, where the explorer API is deprecated, so the
+// rules could never fire. Novelty is now derived from RPC facts (nonce + balance)
+// and AEGIS escrow history from the on-chain vault log, so a tunable age
+// threshold would be a knob that controls nothing.
 
 /**
  * Transfer amount threshold (BNB) for the "significant transfer" classification.
@@ -111,18 +133,59 @@ const VERY_LARGE_TRANSFER_BNB = Number(
 );
 
 /**
- * Upper bound of wallet age (in days) for the "medium" category — Rule 10.
- * Wallets aged between NEW_WALLET_DAYS and this value still count as semi-new.
- * Default: 30 days.
+ * Total block budget for one vault-history scan, counted back from the chain
+ * head. The scan starts at the vault's deploy block when that is inside the
+ * budget, otherwise this many blocks back. Whatever could not be scanned is
+ * reported as `windowLimited` so a truncated count is never read as complete.
+ *
+ * On BSC testnet the budget IS the history: no public node there serves
+ * historical `eth_getCode`, so the deploy block cannot be resolved and the scan
+ * is always anchored at the floor. 500 000 blocks ≈ 25 chunked round-trips per
+ * direction, and the ranges are memoised across evaluations.
  */
-const MEDIUM_WALLET_DAYS = Number(process.env.MEDIUM_WALLET_DAYS ?? 30);
+const VAULT_SCAN_LOOKBACK_BLOCKS = Number(
+  process.env.VAULT_SCAN_LOOKBACK_BLOCKS ?? 500_000
+);
 
 /**
- * tx threshold for medium-age wallets — Rule 10.
- * Medium-age wallets with txCount <= this value are considered low-activity.
- * Default: 10 transactions.
+ * Chunk size for `eth_getLogs`, in blocks.
+ *
+ * Public BSC testnet nodes hard-cap a single log request at 50 000 blocks
+ * ("exceed maximum block range"), and they reject a wide request instead of
+ * truncating it. Without chunking, any scan wider than the cap fails outright
+ * and the whole vault history degrades to `unavailable` — which is exactly what
+ * happened before this parameter existed. Chunks that are still refused are
+ * split in half recursively down to VAULT_LOG_MIN_CHUNK_BLOCKS.
  */
-const MEDIUM_TX_THRESHOLD = Number(process.env.MEDIUM_TX_THRESHOLD ?? 10);
+const VAULT_LOG_CHUNK_BLOCKS = Number(
+  process.env.VAULT_LOG_CHUNK_BLOCKS ?? 20_000
+);
+
+/**
+ * How many `eth_getLogs` chunks to have in flight at once.
+ *
+ * The vault history has to be walked backwards chunk by chunk (public testnet
+ * nodes cap a single request at ~50 000 blocks and have no historical state, so
+ * there is no deploy block to anchor the scan on). Firing the chunks in parallel
+ * keeps that walk to roughly one round-trip instead of one per chunk.
+ */
+const VAULT_LOG_CONCURRENCY = Number(process.env.VAULT_LOG_CONCURRENCY ?? 6);
+
+/** Floor for the recursive chunk split — below this we give up on the chunk. */
+const VAULT_LOG_MIN_CHUNK_BLOCKS = Number(
+  process.env.VAULT_LOG_MIN_CHUNK_BLOCKS ?? 500
+);
+
+/**
+ * Distinct on-chain senders that turn a recipient into a "pooling hub" — Rule 10.
+ *
+ * Read from the AegisVault event log via RPC (real data, free). Many-to-one
+ * funding is the signature of a collection hub worth a contextual review.
+ * Default: 3
+ */
+const POOLING_HUB_MIN_SENDERS = Number(
+  process.env.POOLING_HUB_MIN_SENDERS ?? 3
+);
 
 // ── Oracle Polling ────────────────────────────────────────────────────────────
 const POLLING_INTERVAL_MS = Number(process.env.POLLING_INTERVAL_MS ?? 8_000);
@@ -159,14 +222,16 @@ export const config = {
   GOPLUS_TIMEOUT_MS,
   GOPLUS_SIMULATE,
   GOPLUS_SIMULATED_ADDRESSES,
+  GOPLUS_CHAIN_IDS,
   BSCSCAN_API_URL,
   BSCSCAN_API_KEY,
   BSCSCAN_TIMEOUT_MS,
-  NEW_WALLET_DAYS,
-  LOW_TX_COUNT_THRESHOLD,
+  VAULT_SCAN_LOOKBACK_BLOCKS,
+  VAULT_LOG_CHUNK_BLOCKS,
+  VAULT_LOG_MIN_CHUNK_BLOCKS,
+  VAULT_LOG_CONCURRENCY,
   SIGNIFICANT_TRANSFER_BNB,
   VERY_LARGE_TRANSFER_BNB,
-  MEDIUM_WALLET_DAYS,
-  MEDIUM_TX_THRESHOLD,
+  POOLING_HUB_MIN_SENDERS,
   POLLING_INTERVAL_MS,
 } as const;

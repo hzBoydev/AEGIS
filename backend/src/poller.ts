@@ -266,6 +266,25 @@ async function processEscrow(
           : "Past ESCROW_TIMEOUT — the funds can be claimed back by the sender.",
         data: { ...(claimTx ? { claimTx } : {}), expired: true },
       });
+
+      // Record the timeout outcome. It is a REAL terminal outcome (funds went
+      // back to the sender), so leaving it out of the DB made both the history
+      // view and the agent memory silently drop those escrows.
+      saveDecision({
+        escrowId,
+        sender: String(sender),
+        recipient: String(recipient),
+        amount: Number(formatEther(amount)).toString(),
+        eligible: false,
+        confidence: 0,
+        reasoning:
+          "The escrow timed out before the oracle produced a verdict — the funds were returned to the sender automatically.",
+        riskLevel: "UNKNOWN",
+        decidedBy: "expired",
+        ...(claimTx ? { txHash: claimTx } : {}),
+        status: "final",
+      });
+
       processingOrDone.add(escrowId);
       return;
     }
@@ -398,6 +417,9 @@ export async function applyHumanVote(
     const ok = finalizeHumanDecision({
       escrowId,
       humanVote: approve,
+      // Funds did NOT reach the recipient — claimExpired() returned them to the
+      // sender. eligible must record that outcome, not the operator's opinion.
+      fundsReleased: false,
       humanReason: row.human_reason ?? "escrow expired",
       finalReason: expiredReason,
       decidedBy: "human",

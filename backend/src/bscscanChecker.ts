@@ -22,17 +22,97 @@ export interface OnChainIntel {
   /**
    * Wallet age in days since first transaction. null if unknown.
    * NOTE: only obtainable from the explorer — RPC has no first-transaction
-   * history, so this field stays null while the explorer is down.
+   * history. Because the BSC testnet explorer is deprecated (Etherscan V2 needs
+   * a paid plan for chain 97), this field is null in practice on testnet and
+   * the rule engine must NOT branch on it. See `novelty` for the honest signal.
    */
   walletAgeInDays: number | null;
-  /** True if walletAgeInDays < NEW_WALLET_DAYS; when age is unknown, based on txCount === 0. */
-  isNewWallet: boolean;
-  /** True if the address is a smart contract. */
+  /**
+   * True if the address is a smart contract.
+   *
+   * NOTE: an EIP-7702 delegation designator (`0xef0100` + 20 bytes) is NOT a
+   * contract — it is an EOA that delegated its code. Counting it as a contract
+   * made Rule 6 hard-REJECT ordinary modern wallets; on BSC testnet every
+   * standard Hardhat account answers with a delegation, so this was not an edge
+   * case. See `eip7702Delegated`.
+   */
   isContract: boolean;
+  /**
+   * True when the address carries an EIP-7702 delegation designator: an EOA
+   * whose code is executed from a delegate contract. Still an EOA for the
+   * purpose of "is this a contract", but worth showing in the evidence.
+   */
+  eip7702Delegated: boolean;
   /** BNB balance. null if unavailable. */
   balanceBNB: number | null;
   /** True if BOTH the explorer and RPC failed to return any data. */
   unavailable: boolean;
+
+  // ── Real, on-chain AEGIS activity (source: AegisVault logs via RPC) ─────────
+  /**
+   * Escrow activity of this address in AegisVault, read DIRECTLY from the chain
+   * via eth_getLogs. This is the replacement for the dead explorer signal: it is
+   * real, free, and available on any RPC node.
+   */
+  aegisEscrowIn: number;
+  aegisEscrowOut: number;
+  /** Distinct counterparties that ever funded this address through AEGIS. */
+  aegisDistinctSenders: number;
+  /** Block number of the earliest AEGIS escrow touching this address. */
+  aegisFirstSeenBlock: bigint | null;
+  /** Block number of the most recent AEGIS escrow touching this address. */
+  aegisLastSeenBlock: bigint | null;
+  /** True when the vault log query itself failed (unknown, NOT zero). */
+  aegisLogsUnavailable: boolean;
+  /** True when only a recent block window could be scanned (counts = lower bound). */
+  aegisWindowLimited: boolean;
+
+  // ── Honest composite signals derived from the fields above ─────────────────
+  /**
+   * How "fresh" this account is, expressed ONLY in signals that actually exist.
+   *
+   * "novel"       — no outgoing tx, zero balance, never seen in the vault.
+   * "barelyUsed"   — has sent at least one tx OR holds funds, but no vault history.
+   * "established" — has AEGIS escrow history in the vault.
+   * "unknown"     — not enough data to tell (logs unavailable / RPC down).
+   *
+   * NOTE: the previous `isNewWallet` flag claimed `txCount === 0` means "new
+   * wallet", but txCount is the OUTGOING nonce — a receive-only account that has
+   * been funded many times legitimately shows 0 and was mislabelled "new", which
+   * made a hard REJECT rule fire on ordinary users.
+   */
+  novelty: NoveltyLevel;
+  /** True only for `novel` — used by the hard rules. */
+  isNovelAccount: boolean;
+}
+
+export type NoveltyLevel = "novel" | "barelyUsed" | "established" | "unknown";
+
+/**
+ * Classify the bytecode returned by `eth_getCode`.
+ *
+ * Three cases matter:
+ *   - empty            → plain EOA;
+ *   - `0xef0100` + 20  → EIP-7702 delegation: an EOA that points its code at a
+ *                        delegate contract. Empirically, the standard Hardhat
+ *                        test accounts on BSC testnet ALL look like this, so
+ *                        treating them as contracts made the contract-receiver
+ *                        rule reject normal wallets;
+ *   - anything else    → a real contract.
+ *
+ * Exported so the red-team suite can pin this behaviour without an RPC call.
+ */
+export function classifyCode(code: string | undefined | null): {
+  isContract: boolean;
+  eip7702Delegated: boolean;
+} {
+  if (!code || code === "0x") return { isContract: false, eip7702Delegated: false };
+  const hex = code.toLowerCase();
+  // 23 bytes of code = "0x" + 46 hex chars (3-byte designator + 20-byte address).
+  if (hex.length === 2 + 46 && hex.startsWith("0xef0100")) {
+    return { isContract: false, eip7702Delegated: true };
+  }
+  return { isContract: true, eip7702Delegated: false };
 }
 
 // ── BscScan response shapes ───────────────────────────────────────────────────
@@ -184,6 +264,412 @@ export async function getRecentTransactions(
   }
 }
 
+// ── On-chain AEGIS vault history (real data, free, via RPC) ───────────────────
+/**
+ * Real AEGIS escrow history read straight from the chain with `eth_getLogs`.
+ *
+ * Why this replaces the explorer: the BSC testnet explorer is dead (V1
+ * deprecated; Etherscan V2 is a paid plan for chain 97), so `walletAgeInDays`
+ * can never be populated and every "new wallet" heuristic built on top of it was
+ * fabricated — worse, the fallback (`outgoing nonce === 0`) mislabels ordinary
+ * receive-only wallets as brand new, which triggered hard REJECTs on regular
+ * users. `eth_getLogs` against the vault needs no API key, no plan and no
+ * indexer: it is the one on-chain history source that is both free and actually
+ * available here, so it becomes the honest signal.
+ *
+ * Scope limit (stated to the LLM, never hidden): it only sees transfers that went
+ * THROUGH AEGIS. It is not a complete history of the address.
+ */
+
+const escrowedEvent = {
+  type: "event",
+  name: "EscrowCreated",
+  inputs: [
+    { indexed: true, name: "escrowId", type: "bytes32" },
+    { indexed: true, name: "sender", type: "address" },
+    { indexed: true, name: "recipient", type: "address" },
+    { indexed: false, name: "amount", type: "uint256" },
+  ],
+} as const;
+
+export interface VaultActivity {
+  /** Escrows created with this address as the RECIPIENT. */
+  escrowIn: number;
+  /** Escrows created with this address as the SENDER. */
+  escrowOut: number;
+  /** Distinct counterparties that ever funded this address through AEGIS. */
+  distinctSenders: number;
+  /** Block number of the earliest AEGIS escrow touching this address. */
+  firstSeenBlock: bigint | null;
+  /** Block number of the most recent AEGIS escrow touching this address. */
+  lastSeenBlock: bigint | null;
+  /**
+   * True when the log query failed → every count above is UNKNOWN, not zero.
+   * Never let a failed read become "this address has no history".
+   */
+  unavailable: boolean;
+  /**
+   * True when only a recent window could be scanned (public RPCs cap the block
+   * range of a single eth_getLogs call). The counts are then a LOWER BOUND.
+   */
+  windowLimited: boolean;
+}
+
+const UNKNOWN_VAULT_ACTIVITY: VaultActivity = {
+  escrowIn: 0,
+  escrowOut: 0,
+  distinctSenders: 0,
+  firstSeenBlock: null,
+  lastSeenBlock: null,
+  unavailable: true,
+  windowLimited: false,
+};
+
+/**
+ * Block where the vault was deployed, found by binary search over `eth_getCode`
+ * and cached for the process lifetime.
+ *
+ * Needed because public RPCs refuse `eth_getLogs` from block 0, and we must not
+ * silently under-count by scanning only a recent window.
+/**
+ * Block where the vault was deployed, found by binary search over `eth_getCode`
+ * and cached for the process lifetime.
+ *
+ * Needed because public RPCs refuse `eth_getLogs` from block 0, and we must not
+ * silently under-count by scanning only a recent window.
+ *
+ * `null` means UNKNOWN — the node could not answer, so we know nothing about the
+ * deploy block and must anchor the scan at the budget floor with the result
+ * flagged as a lower bound. The two ways this happens in the wild, both observed
+ * on BSC testnet:
+ *   1. the node refuses historical state outright ("Missing or invalid
+ *      parameters" / "missing trie node") — it is not an archival node;
+ *   2. the node answers "0x" for every historical block even though the contract
+ *      has code at the head, i.e. it cannot distinguish "not deployed yet" from
+ *      "no historical state" — the bisect then collapses to 0, which is not a
+ *      real deploy block and must not be used as one.
+ */
+let deployBlockPromise: Promise<bigint | null> | null = null;
+
+/**
+ * Locate the block the vault was deployed in, by bisecting on bytecode presence.
+ *
+ * Returns:
+ *   0n    — the vault is not deployed at the configured address, so no
+ *           EscrowCreated event can ever exist (empty is a real answer here);
+ *   block — the resolved deploy block;
+ *   null  — the deploy block is UNKNOWN; the caller must scan a bounded window
+ *           and report the counts as a lower bound.
+ */
+async function resolveVaultDeployBlock(): Promise<bigint | null> {
+  if (deployBlockPromise) return deployBlockPromise;
+
+  deployBlockPromise = (async (): Promise<bigint | null> => {
+    const address = config.CONTRACT_ADDRESS;
+    let lo = 0n;
+    let hi = await publicClient.getBlockNumber();
+
+    // Confirm the contract is deployed at all before bisecting.
+    let headCode: string | undefined;
+    try {
+      headCode = await publicClient.getCode({ address });
+    } catch (err) {
+      console.warn(
+        `[Vault]  eth_getCode failed at the chain head ` +
+          `(${err instanceof Error ? err.message : err}) — AEGIS history UNKNOWN.`
+      );
+      return null;
+    }
+    if (!headCode || headCode === "0x") {
+      console.warn(
+        `[Vault]  No contract code at ${address} — no AEGIS escrow can exist; ` +
+          `treating vault history as empty, not as unknown.`
+      );
+      return 0n;
+    }
+
+    // Probe the node's historical support before trusting a bisect over it.
+    try {
+      await publicClient.getCode({ address, blockNumber: hi / 2n });
+    } catch (err) {
+      console.warn(
+        `[Vault]  The RPC node cannot serve historical state ` +
+          `(${err instanceof Error ? err.message : err}) — the vault deploy block is ` +
+          `UNKNOWN, so the AEGIS history will be a lower bound over a recent window.`
+      );
+      return null;
+    }
+
+    while (lo < hi) {
+      const mid = (lo + hi + 1n) / 2n;
+      let code: string | undefined;
+      try {
+        code = await publicClient.getCode({ address, blockNumber: mid });
+      } catch (err) {
+        console.warn(
+          `[Vault]  eth_getCode at block ${mid} failed ` +
+            `(${err instanceof Error ? err.message : err}) — deploy block UNKNOWN.`
+        );
+        return null;
+      }
+      if (code && code !== "0x") lo = mid;
+      else hi = mid - 1n;
+    }
+
+    if (lo === 0n) {
+      // The node reported "no code" at every historical block while the head has
+      // code: that is a node without usable history, not a genesis deployment.
+      console.warn(
+        `[Vault]  Bisect collapsed to block 0 while the head has code — treating the ` +
+          `deploy block as UNKNOWN and the AEGIS history as a lower bound.`
+      );
+      return null;
+    }
+
+    console.log(`[Vault]  Vault deploy block resolved: ${lo}`);
+    return lo;
+  })().catch((err) => {
+    console.warn(
+      `[Vault]  Deploy-block lookup failed (${err instanceof Error ? err.message : err}).`
+    );
+    return null;
+  });
+
+  return deployBlockPromise;
+}
+
+
+/** One EscrowCreated log, as returned by viem. */
+type EscrowLog = {
+  blockNumber: bigint | null;
+  args?: { sender?: string; recipient?: string } | undefined;
+};
+
+/** Which side of an escrow the address was on. */
+type EscrowSide = "recipient" | "sender";
+
+type LogQuery = {
+  fromBlock: bigint;
+  toBlock: bigint;
+  address: `0x${string}`;
+  side: EscrowSide;
+};
+
+const CHUNK = BigInt(Math.max(1, config.VAULT_LOG_CHUNK_BLOCKS));
+const MIN_CHUNK = BigInt(Math.max(1, config.VAULT_LOG_MIN_CHUNK_BLOCKS));
+
+/**
+ * Memo: block range (aligned to CHUNK) → the vault emitted no EscrowCreated
+ * event in it.
+ *
+ * EscrowCreated logs are immutable once the range is behind the head, so "this
+ * range has no vault activity" is a permanent fact and can be reused by every
+ * later evaluation instead of re-querying the same 50 chunks per address. Without
+ * this, one address costs ~100 round-trips (~11 s measured), and the pipeline
+ * needs the scan for the recipient, the sender profile and the Advocate's own
+ * side evidence.
+ *
+ * A range whose emptiness could not be proven is simply absent from the map, so
+ * a failed probe never becomes a cached "empty".
+ */
+const emptyRangeMemo = new Map<string, boolean>();
+const EMPTY_MEMO_LIMIT = 5_000;
+
+function rangeKey(fromBlock: bigint, toBlock: bigint): string {
+  return `${fromBlock}-${toBlock}`;
+}
+
+async function fetchLogs(from: bigint, to: bigint, args?: Record<string, `0x${string}`>): Promise<EscrowLog[]> {
+  const res = await publicClient.getLogs({
+    address: config.CONTRACT_ADDRESS,
+    event: escrowedEvent,
+    fromBlock: from,
+    toBlock: to,
+    ...(args ? { args } : {}),
+  });
+  return res as unknown as EscrowLog[];
+}
+
+/**
+ * Prove (and remember) that the vault emitted no EscrowCreated in [from, to].
+ * Returns false when the node would not answer — the caller must then query the
+ * range itself and report the failure.
+ */
+async function rangeIsProvablyEmpty(from: bigint, to: bigint, depth = 0): Promise<boolean> {
+  if (to < from) return true;
+  const key = rangeKey(from, to);
+  const memo = emptyRangeMemo.get(key);
+  if (memo !== undefined) return memo;
+
+  try {
+    const logs = await fetchLogs(from, to);
+    if (logs.length > 0) return false;
+  } catch (err) {
+    const span = to - from + 1n;
+    if (depth < 24 && span > MIN_CHUNK) {
+      const mid = from + span / 2n;
+      const [a, b] = await Promise.all([
+        rangeIsProvablyEmpty(from, mid - 1n, depth + 1),
+        rangeIsProvablyEmpty(mid, to, depth + 1),
+      ]);
+      return a && b;
+    }
+    return false;
+  }
+
+  if (emptyRangeMemo.size > EMPTY_MEMO_LIMIT) {
+    // Oldest-first eviction; the memo is only an optimization, so dropping it is safe.
+    const oldest = emptyRangeMemo.keys().next();
+    if (!oldest.done) emptyRangeMemo.delete(oldest.value);
+  }
+  emptyRangeMemo.set(key, true);
+  return true;
+}
+
+/**
+ * Read this address's EscrowCreated logs over [fromBlock, toBlock].
+ *
+ * The range is cut into CHUNK-sized, CHUNK-aligned blocks, each checked against
+ * the range-level memo before spending a request on it, and the chunks are
+ * fetched through a small worker pool. A chunk the node still refuses is split in
+ * half recursively; a range that ultimately cannot be read is reported in
+ * `failed` and the caller must treat the result as a lower bound.
+ */
+async function getLogsChunked(query: LogQuery): Promise<{
+  logs: EscrowLog[];
+  failed: Array<{ fromBlock: bigint; toBlock: bigint; error: string }>;
+}> {
+  const logs: EscrowLog[] = [];
+  const failed: Array<{ fromBlock: bigint; toBlock: bigint; error: string }> = [];
+
+  // Aligned ranges: [k*CHUNK, min((k+1)*CHUNK-1, toBlock)], newest last, so the
+  // memo is shared across evaluations that start from the same budget floor.
+  const firstAligned = (query.fromBlock / CHUNK) * CHUNK;
+  const ranges: Array<[bigint, bigint]> = [];
+  for (let from = firstAligned; from <= query.toBlock; from += CHUNK) {
+    const to = from + CHUNK - 1n > query.toBlock ? query.toBlock : from + CHUNK - 1n;
+    ranges.push([from < query.fromBlock ? query.fromBlock : from, to]);
+  }
+
+  const run = async (from: bigint, to: bigint, depth: number): Promise<void> => {
+    if (to < from) return;
+    // A range with provably no vault activity cannot contain this address.
+    if (await rangeIsProvablyEmpty(from, to)) return;
+    try {
+      const res = await fetchLogs(from, to, { [query.side]: query.address } as Record<string, `0x${string}`>);
+      logs.push(...res);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const span = to - from + 1n;
+      if (depth < 24 && span > MIN_CHUNK) {
+        const mid = from + span / 2n;
+        await run(from, mid - 1n, depth + 1);
+        await run(mid, to, depth + 1);
+        return;
+      }
+      failed.push({ fromBlock: from, toBlock: to, error: msg });
+    }
+  };
+
+  const concurrency = Math.max(1, config.VAULT_LOG_CONCURRENCY);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const i = next++;
+      if (i >= ranges.length) return;
+      const [from, to] = ranges[i]!;
+      await run(from, to, 0);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, ranges.length) }, worker));
+
+  return { logs, failed };
+}
+
+/** Summarize raw logs into a VaultActivity, flagging a truncated scan. */
+function summarizeLogs(
+  logs: EscrowLog[],
+  opts: { outbound: number; failed: boolean }
+): VaultActivity {
+  const senders = new Set<string>();
+  const blocks: bigint[] = [];
+  for (const l of logs) {
+    if (l.args?.sender) senders.add(String(l.args.sender).toLowerCase());
+    if (l.blockNumber !== null && l.blockNumber !== undefined) blocks.push(l.blockNumber);
+  }
+  return {
+    escrowIn: logs.length,
+    escrowOut: opts.outbound,
+    distinctSenders: senders.size,
+    firstSeenBlock: blocks.length ? blocks.reduce((a, b) => (a < b ? a : b)) : null,
+    lastSeenBlock: blocks.length ? blocks.reduce((a, b) => (a > b ? a : b)) : null,
+    // A scan that failed on every range taught us nothing → unavailable. A scan
+    // that failed on SOME ranges gave us a lower bound → windowLimited.
+    unavailable: logs.length === 0 && opts.failed,
+    windowLimited: opts.failed,
+  };
+}
+
+/**
+ * Read this address's REAL AEGIS escrow history from the chain.
+ * Both directions are queried: what funded it, and what it funded.
+ *
+ * Range: from the vault's deploy block, bounded by a VAULT_SCAN_LOOKBACK_BLOCKS
+ * budget, chunked so public-node range caps cannot wipe out the whole scan.
+ */
+export async function getVaultActivity(address: string): Promise<VaultActivity> {
+  const addr = address.toLowerCase() as `0x${string}`;
+
+  try {
+    const [latest, deployBlock] = await Promise.all([
+      publicClient.getBlockNumber(),
+      resolveVaultDeployBlock(),
+    ]);
+
+    const budget = BigInt(config.VAULT_SCAN_LOOKBACK_BLOCKS);
+    const floor = latest > budget ? latest - budget : 0n;
+    // An UNKNOWN deploy block must never be treated as "history starts at the
+    // head" — that is how a scan reports zero escrows on an address that has
+    // them. Anchor at the budget floor and mark the result a lower bound.
+    const fromBlock = deployBlock !== null && deployBlock > floor ? deployBlock : floor;
+    const truncatedByBudget = deployBlock === null || deployBlock < floor;
+    if (deployBlock === null) {
+      console.warn(
+        `[Vault]  Scanning only blocks ${fromBlock}–${latest} for the vault log; ` +
+          `older escrows (if any) are not included.`
+      );
+    }
+    if (fromBlock > latest) {
+      return { ...UNKNOWN_VAULT_ACTIVITY, unavailable: false, windowLimited: true };
+    }
+
+    const [inbound, outbound] = await Promise.all([
+      getLogsChunked({ fromBlock, toBlock: latest, address: addr, side: "recipient" }),
+      getLogsChunked({ fromBlock, toBlock: latest, address: addr, side: "sender" }),
+    ]);
+
+    const failedCount = inbound.failed.length + outbound.failed.length;
+    if (failedCount > 0) {
+      console.warn(
+        `[Vault]  ${address}: ${failedCount} block range(s) refused by the RPC node ` +
+          `(e.g. ${(inbound.failed[0] ?? outbound.failed[0])?.error}) — ` +
+          `AEGIS history is a LOWER BOUND over blocks ${fromBlock}–${latest}.`
+      );
+    }
+
+    return summarizeLogs(inbound.logs, {
+      outbound: outbound.logs.length,
+      failed: failedCount > 0 || truncatedByBudget,
+    });
+  } catch (err) {
+    console.warn(
+      `[Vault]  eth_getLogs failed for ${address} ` +
+        `(${err instanceof Error ? err.message : err}) — AEGIS history UNKNOWN, not empty.`
+    );
+    return UNKNOWN_VAULT_ACTIVITY;
+  }
+}
+
 // ── Main function ─────────────────────────────────────────────────────────────
 /**
  * Fetch on-chain intelligence for a given address from BscScan Testnet.
@@ -205,7 +691,10 @@ export async function getOnChainIntel(address: string): Promise<OnChainIntel> {
 
   try {
     // ── Parallel calls ────────────────────────────────────────────────────────
-    const [txListResp, balanceResp, contractResp] = await Promise.all([
+    // The vault log query runs alongside the explorer + RPC calls: it is the
+    // only working on-chain history source on testnet, so it must not be
+    // serialised behind the (currently dead) explorer endpoints.
+    const [txListResp, balanceResp, contractResp, vault] = await Promise.all([
       bscscanGet<BscScanTxListResponse>(
         {
           module: "account",
@@ -225,6 +714,7 @@ export async function getOnChainIntel(address: string): Promise<OnChainIntel> {
         { module: "contract", action: "getabi", address: addr },
         controller.signal
       ),
+      getVaultActivity(addr),
     ]);
 
     clearTimeout(timer);
@@ -273,6 +763,7 @@ export async function getOnChainIntel(address: string): Promise<OnChainIntel> {
       contractResp.result[0]?.ABI !== "Contract source code not verified";
 
     let isContract = isContractFromExplorer;
+    let eip7702Delegated = false;
 
     // ── Fallback & ground-truth via RPC node ──────────────────────────────────
     // The BscScan V1 explorer endpoint is deprecated and chain 97 is NOT in the
@@ -298,38 +789,129 @@ export async function getOnChainIntel(address: string): Promise<OnChainIntel> {
     if (codeRes.status === "fulfilled" && codeRes.value !== undefined) {
       // getCode is the ground truth for contract status (more reliable than the
       // explorer ABI heuristic, which also dies once the endpoint is deprecated).
-      isContract = codeRes.value !== "0x";
+      ({ isContract, eip7702Delegated } = classifyCode(codeRes.value));
     }
 
-    // ── isNewWallet ───────────────────────────────────────────────────────────
-    const isNewWallet =
-      walletAgeInDays !== null
-        ? walletAgeInDays < config.NEW_WALLET_DAYS
-        : txCount === 0; // no txs = treat as new
-
+    // ── isNewWallet → honest novelty classification ───────────────────────────
     const allNull =
       txCount === null && walletAgeInDays === null && balanceBNB === null;
+
+    const novelty = classifyNovelty({
+      txCount,
+      balanceBNB,
+      escrowIn: vault.escrowIn,
+      escrowOut: vault.escrowOut,
+    });
 
     return {
       txCount,
       txCountSource,
       walletAgeInDays,
-      isNewWallet,
       isContract,
+      eip7702Delegated,
       balanceBNB,
       unavailable: allNull,
+      aegisEscrowIn: vault.escrowIn,
+      aegisEscrowOut: vault.escrowOut,
+      aegisDistinctSenders: vault.distinctSenders,
+      aegisFirstSeenBlock: vault.firstSeenBlock,
+      aegisLastSeenBlock: vault.lastSeenBlock,
+      aegisLogsUnavailable: vault.unavailable,
+      aegisWindowLimited: vault.windowLimited,
+      novelty,
+      isNovelAccount: novelty === "novel",
     };
   } catch (err) {
     clearTimeout(timer);
     console.warn(`[BscScan] Error fetching intel for ${address}:`, err);
-    return {
-      txCount: null,
-      txCountSource: "none",
-      walletAgeInDays: null,
-      isNewWallet: false,
-      isContract: false,
-      balanceBNB: null,
-      unavailable: true,
-    };
+    return unknownIntel();
   }
+}
+
+/**
+ * Classify how "fresh" an account is, using ONLY signals that actually exist.
+ *
+ * The old `isNewWallet = (txCount === 0)` was a fabrication: txCount is the
+ * OUTGOING nonce, so a receive-only account that has been funded 50 times shows
+ * 0 and was labelled "brand new" — then hard-rejected. Wallet age, the field
+ * that would actually answer the question, needs an indexer and is unavailable.
+ *
+ * Rules (all from real RPC data):
+ *   - the account has interacted with the AEGIS vault  → "established"
+ *   - the account has sent a tx, or holds funds        → "barelyUsed"
+ *   - nothing outgoing, zero balance                    → "novel"
+ *   - not enough data                                  → "unknown"
+ *
+ * "novel" and "barelyUsed" are decided from RPC facts ONLY (nonce + balance).
+ * The vault log can promote an account to "established" but can never demote it
+ * — and when the log is unreachable we must NOT pretend the account has no vault
+ * history, which is why the labels avoid claiming anything about it. Callers
+ * that need the vault history must read aegisLogsUnavailable explicitly.
+ */
+function classifyNovelty(input: {
+  txCount: number | null;
+  balanceBNB: number | null;
+  escrowIn: number;
+  escrowOut: number;
+}): NoveltyLevel {
+  const { txCount, balanceBNB, escrowIn, escrowOut } = input;
+
+  if (escrowIn > 0 || escrowOut > 0) return "established";
+
+  // Both the nonce and the balance are RPC facts, so "novel" is only claimed
+  // when we actually have them.
+  if (txCount === null || balanceBNB === null) return "unknown";
+
+  // "novel"/"barelyUsed" are RPC-only verdicts (nonce + balance). They are NOT
+  // claims about AEGIS history: an unreachable vault log can neither promote nor
+  // demote them, and the caller must surface aegisLogsUnavailable so that a
+  // failed log is never read as "no AEGIS history".
+
+  const neverSent = txCount === 0;
+  const noFunds = balanceBNB === 0;
+
+  if (neverSent && noFunds) return "novel";
+  return "barelyUsed";
+}
+
+/**
+ * Plain-language label for a novelty level.
+ *
+ * Exported so the LLM prompts and the tool payloads describe the classification
+ * in the same words — the label is deliberately explicit that UNKNOWN is not
+ * "new", which is exactly the confusion the old `isNewWallet` flag caused.
+ */
+export function describeNovelty(novelty: NoveltyLevel): string {
+  switch (novelty) {
+    case "novel":
+      return "NOVEL — RPC facts only: nonce 0 (never sent a transaction) and zero balance";
+    case "barelyUsed":
+      return "in use — RPC facts only: has sent a transaction (nonce > 0) or holds a balance";
+    case "established":
+      return "established — has AEGIS escrow history in the on-chain vault log";
+    default:
+      return "UNKNOWN — not enough data to classify (do NOT read this as 'new')";
+  }
+}
+
+/** Every field explicitly unknown — used when intel collection throws. */
+export function unknownIntel(): OnChainIntel {
+  return {
+    txCount: null,
+    txCountSource: "none",
+    walletAgeInDays: null,
+    isContract: false,
+    eip7702Delegated: false,
+    balanceBNB: null,
+    unavailable: true,
+    aegisEscrowIn: 0,
+    aegisEscrowOut: 0,
+    aegisDistinctSenders: 0,
+    aegisFirstSeenBlock: null,
+    aegisLastSeenBlock: null,
+    aegisLogsUnavailable: true,
+    aegisWindowLimited: false,
+    novelty: "unknown",
+    isNovelAccount: false,
+  };
 }

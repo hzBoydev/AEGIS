@@ -1,6 +1,6 @@
 import { config } from "./config.js";
 import type { SecurityCheckResult } from "./goplusChecker.js";
-import type { OnChainIntel } from "./bscscanChecker.js";
+import { describeNovelty, type OnChainIntel } from "./bscscanChecker.js";
 import { TOOL_CATALOG } from "./tools.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -26,10 +26,23 @@ export interface LLMInput {
   intel: OnChainIntel;
   /** Historical memory text from agentMemory — ready to inject into the prompt */
   memoryContext?: string;
+  /**
+   * Sender reputation block from agentMemory. Present so the Investigator,
+   * Advocate and Judge all weigh the sender — previously only the recipient had
+   * a memory block, so a repeat sender with a rejection history looked identical
+   * to a first-time one.
+   */
+  senderContext?: string;
   /** Tool execution results (second round / followUp only). */
   toolResults?: string;
   /** True for the second round: final decision, needsData must be []. */
   followUp?: boolean;
+  /**
+   * Extra evidence the Advocate fetched for itself. The Advocate used to argue
+   * blind: it saw the recipient's evidence but never the sender's, so it had to
+   * either invent an argument or repeat the Investigator's own facts.
+   */
+  advocateContext?: string;
 }
 
 /** Advocate arguments — the position opposite to the Investigator's. */
@@ -149,63 +162,107 @@ const TX_SOURCE_RULE =
   '- If the txCount source = RPC nonce (outgoing transactions), you are FORBIDDEN to write "0 on-chain transactions" / "no on-chain transactions" / "has never transacted". ' +
   'Write exactly: "has never sent an outgoing transaction (nonce 0)". For the real activity of the account (incoming), use the numbers from the AEGIS MEMORY block.';
 
-function buildPrompt(input: LLMInput): string {
+/**
+ * The single shared evidence block, used by the Investigator, the Advocate and
+ * the Judge so all three read identical facts (previously it was duplicated in
+ * two places and had already drifted).
+ */
+function buildEvidenceBlock(input: LLMInput): string {
   const { sender, recipient, amountBNB, security, intel } = input;
 
   const goplusSection =
     security.status === "unavailable"
       ? `GoPlus Security: UNAVAILABLE (the API cannot be reached; treat as unknown, NOT safe)`
       : security.status === "malicious"
-      ? `GoPlus Security: MALICIOUS\nFlags detected: ${security.riskFlags.join(", ")}`
-      : `GoPlus Security: CLEAN (no malicious flags)\nFlags checked: ${security.riskFlags.length === 0 ? "none" : security.riskFlags.join(", ")}`;
+        ? `GoPlus Security: MALICIOUS\nFlags detected: ${security.riskFlags.join(", ")}` +
+          (security.simulated
+            ? `\n*** WARNING: this verdict is a DEMO SIMULATION, not a real GoPlus detection. ***`
+            : "") +
+          (security.flaggedChains && security.flaggedChains.length > 0
+            ? `\nFlagged on chain(s): ${security.flaggedChains.join(", ")}`
+            : "")
+        : `GoPlus Security: CLEAN (no malicious flags)\nFlags checked: ${security.riskFlags.length === 0 ? "none" : security.riskFlags.join(", ")}` +
+          (security.failedChains && security.failedChains.length > 0
+            ? `\nPARTIAL COVERAGE: chain(s) ${security.failedChains.join(", ")} were unreachable — this is not a complete clean bill of health.`
+            : "");
 
-  const bscscanSection = intel.unavailable
-    ? `BscScan On-chain: UNAVAILABLE (treat as unknown, NOT safe)`
+  const onchainSection = intel.unavailable
+    ? `On-chain: UNAVAILABLE (treat as unknown, NOT safe)`
     : [
-        `BscScan On-chain (BSC Testnet):`,
+        `On-chain data (BSC Testnet, chain 97 — read directly from the RPC node):`,
         txCountLine(intel),
-        `  Wallet age       : ${intel.walletAgeInDays !== null ? `${intel.walletAgeInDays.toFixed(1)} days` : "unknown (the explorer provides no age data)"}`,
-        `  New wallet       : ${intel.isNewWallet ? "yes" : "no"}`,
-        `  Smart contract   : ${intel.isContract ? "yes" : "no"}`,
+        `  Account profile  : ${describeNovelty(intel.novelty)}`,
+        `  Smart contract   : ${
+          intel.isContract
+            ? "yes"
+            : intel.eip7702Delegated
+              ? "no — EIP-7702 delegation designator (an EOA that delegates its code to a contract)"
+              : "no"
+        }`,
         `  BNB balance      : ${intel.balanceBNB !== null ? `${intel.balanceBNB.toFixed(6)} BNB` : "unknown"}`,
+        vaultLine(intel),
       ].join("\n");
 
+  const memorySection =
+    input.memoryContext ??
+    "AEGIS HISTORICAL MEMORY (INTERNAL history — NOT on-chain data):\n  This address has NEVER transacted via AEGIS before (internal history is empty). This is the first evaluation.";
+
+  const senderSection = input.senderContext ?? "";
+
+  return `IMPORTANT CONTEXT:
+- This is a TESTNET environment. A new wallet with zero or low transaction history is NORMAL and EXPECTED.
+- A new testnet wallet does NOT automatically indicate malicious intent.
+- GoPlus data is based on mainnet reputation. A CLEAN status from GoPlus is a strong positive signal.
+- The on-chain numbers come from the RPC node and the AEGIS vault event log, not from a block explorer.
+- The confidence must reflect REAL risk signals, not merely wallet age.
+
+EVIDENCE:
+Sender address   : ${sender}
+Recipient address: ${recipient}
+Transfer amount  : ${amountBNB} BNB
+
+${memorySection}
+${senderSection ? senderSection + "\n" : ""}${goplusSection}
+
+${onchainSection}`;
+}
+
+/** Real AEGIS vault history line, with its scope stated explicitly. */
+function vaultLine(intel: OnChainIntel): string {
+  if (intel.aegisLogsUnavailable) {
+    return "  AEGIS vault history: UNKNOWN (the event log query failed — NOT 'no history')";
+  }
+  const scope = intel.aegisWindowLimited
+    ? " (partial: only a recent block window could be scanned, so this is a lower bound)"
+    : " (complete since the vault was deployed)";
+  return (
+    `  AEGIS vault history: ${intel.aegisEscrowIn} inbound escrow(s), ` +
+    `${intel.aegisEscrowOut} outbound, ${intel.aegisDistinctSenders} distinct sender(s)${scope}`
+  );
+}
+
+function buildPrompt(input: LLMInput): string {
   return `You are the AEGIS INVESTIGATOR — a security investigator agent for crypto transfers on BNB Smart Chain Testnet (Chain ID 97).
 
 Your task: investigate the evidence below and produce a structured risk assessment (a preliminary assessment — the AI judge makes the final call after an adversarial hearing).
 
 LANGUAGE: You must write every free-text field in ENGLISH. Never answer in any other language.
 
-IMPORTANT CONTEXT:
-- This is a TESTNET environment. A new wallet with zero or low transaction history is NORMAL and EXPECTED.
-- A new testnet wallet does NOT automatically indicate malicious intent.
-- GoPlus data is based on mainnet reputation. A CLEAN status from GoPlus is a strong positive signal.
-- BscScan data reflects testnet activity only — most legitimate testnet wallets do have a low txCount.
-- The confidence must reflect REAL risk signals, not merely wallet age.
-
 MANDATORY RULES:
 1. You are a REASONING engine, not a source of blockchain facts. Use only the evidence provided.
-2. If GoPlus or BscScan data is UNAVAILABLE, do not treat that as safe. Treat it as missing information.
+2. If any data source is UNAVAILABLE or UNKNOWN, do not treat that as safe. Treat it as missing information.
 3. NEVER conclude a wallet is safe just because it is old or has many transactions.
 4. On TESTNET: NEVER lower the confidence just because the wallet is new. New wallets are common here.
-5. If GoPlus is CLEAN with no malicious flags, that is a significant positive signal.
+5. If GoPlus is CLEAN with no malicious flags, that is a positive signal — but if GoPlus reports PARTIAL COVERAGE, do not treat it as a full clean bill of health.
 6. Raise the confidence for a CLEAN GoPlus + a small amount. Lower the confidence only when there are REAL risk signals.
-7. HIGH confidence (>=0.75) when: GoPlus=CLEAN, no flags, small-to-medium amount.
-8. LOW confidence when: GoPlus is unavailable, signals conflict, or the pattern is suspicious.
+7. HIGH confidence (>=0.75) when: GoPlus=CLEAN, no flags, small-to-medium amount, no negative history.
+8. LOW confidence when: a data source is unavailable, signals conflict, or the pattern is suspicious.
 9. Your output will be validated. Return ONLY valid JSON matching the schema below.
 10. If you fill needsData, use ONLY tool names from the given list. Do not invent tool names.
-11. The HISTORICAL MEMORY block is REAL history from the AEGIS database. If the number "Transactions via AEGIS: N" is N > 0, the reason MUST mention N and it is FORBIDDEN to write "first evaluation" / "has never transacted via AEGIS".
+11. The HISTORICAL MEMORY and SENDER HISTORY blocks are REAL history from the AEGIS database. If "Transactions via AEGIS: N" is N > 0, the reason MUST mention N and it is FORBIDDEN to write "first evaluation" / "has never transacted via AEGIS".
+12. If the SENDER HISTORY block contains a WARNING about prior rejections, you MUST reflect that in the confidence and the reason.
 
-EVIDENCE:
-Sender address   : ${sender} (the sender's on-chain profile is NOT part of the evidence)
-Recipient address: ${recipient}
-Transfer amount  : ${amountBNB} BNB
-
-${input.memoryContext ?? "AEGIS HISTORICAL MEMORY (INTERNAL history — NOT on-chain data):\n  This address has NEVER transacted via AEGIS before (internal history is empty). This is the first evaluation."}
-
-${goplusSection}
-
-${bscscanSection}
+${buildEvidenceBlock(input)}
 
 ${
   input.followUp
@@ -224,7 +281,8 @@ Tool rules:
 - In the vast majority of reasonable cases (GoPlus clean, small amount, clear history), just set needsData: [].
 - Request ONLY data that genuinely changes the assessment — not merely to "double check".
 - Guidance on WHEN you should request data:
-  * Transfer amount >= 1 BNB → request get_sender_profile. The sender profile is NOT yet in the evidence above, and a large transfer must assess the sender.
+  * Transfer amount >= 1 BNB → request get_sender_profile. The sender profile is NOT in the evidence above, and a large transfer must assess the sender.
+  * The SENDER HISTORY block shows a prior rejection or a WARNING → a repeat offender deserves a much lower confidence than a first-time sender.
   * You are unsure about the recipient's activity pattern → get_recipient_recent_txs.
   * The historical memory shows a negative history you want to confirm → the matching database history tool.
 - How to read a tool result that comes back with "status": "unavailable": the data source could not be reached. Treat the value as UNKNOWN. Never interpret unavailable as "zero", "empty", or "no history", and never lower your confidence because of it. If the recipient pattern is unknown, say so in your reason and judge on the evidence you do have.
@@ -414,6 +472,7 @@ THIS HEARING:
 - The Investigator has already assessed the case (see the summary below).
 - YOUR TASK: build the STRONGEST argument (steelman) for the position OPPOSITE to the Investigator's lean, namely: ${stanceLabel}.
 - You are NOT the judge. You do NOT produce the final eligible/confidence. You only build the argument.
+- You collected the SIDE EVIDENCE below yourself, in code. It was NOT chosen by the Investigator and it is not part of the block it saw. Use it — that is the point of the exercise.
 
 LANGUAGE: You must write the argument in ENGLISH. Never answer in any other language.
 
@@ -424,14 +483,20 @@ INVESTIGATOR SUMMARY:
 ${investigatorBrief}
 
 ${evidence}
-${toolResults ? `\nADDITIONAL DATA (results of the Investigator's tools):\n${toolResults}\n` : ""}
+${
+  input.advocateContext
+    ? `\nYOUR OWN SIDE EVIDENCE (collected independently by the Advocate):\n${input.advocateContext}\n`
+    : ""
+}${toolResults ? `\nADDITIONAL DATA (results of the Investigator's tools):\n${toolResults}\n` : ""}
 RULES:
 1. Only use the evidence provided — never invent on-chain facts.
-2. The argument must be concrete: state the BNB amount, the GoPlus status, the wallet age/tx count, the historical memory.
-3. The HISTORICAL MEMORY block is REAL history from the AEGIS database (not on-chain data). If "Transactions via AEGIS: N" > 0, never call this address "has never transacted via AEGIS" / "first evaluation".
+2. The argument must be concrete: state the BNB amount, the GoPlus status, the account profile, the vault history, and the AEGIS memory.
+3. The HISTORICAL MEMORY and SENDER HISTORY blocks are REAL history from the AEGIS database (not on-chain data). If "Transactions via AEGIS: N" > 0, never call this address "has never transacted via AEGIS" / "first evaluation".
+4. If your side evidence shows the SENDER is GoPlus-flagged, was previously rejected, or is a brand-new empty account, that is a first-class point for your argument — lead with it.
+5. If the position you defend is weak, still build the best honest argument (without fabrication) — that is the point of an adversarial hearing.
+6. If a data source in your evidence is marked unavailable/unknown, say so in the argument; never argue that a missing signal is a positive one.
 ${TX_SOURCE_RULE}
-4. If the position you defend is weak, still build the best honest argument (without fabrication) — that is the point of an adversarial hearing.
-5. At most 4 argument points, in English, concise.
+7. At most 4 argument points, in English, concise.
 
 Return ONLY JSON:
 {
@@ -512,14 +577,19 @@ INVESTIGATOR SUMMARY:
 ${advocateSection}
 
 ${evidence}
-${toolResults ? `\nADDITIONAL DATA (tool results):\n${toolResults}\n` : ""}
+${
+  input.advocateContext
+    ? `\nSIDE EVIDENCE collected by the Advocate (independent of the Investigator's request):\n${input.advocateContext}\n`
+    : ""
+}${toolResults ? `\nADDITIONAL DATA (tool results):\n${toolResults}\n` : ""}
 ASSESSMENT RULES:
-1. The original evidence (GoPlus/BscScan/memory) OVERRIDES any Investigator or Advocate opinion.
-2. Do not automatically follow the Investigator — a well-argued Advocate case may change the outcome.
-3. Testnet: a new wallet / low tx count is normal; never lower the confidence for that alone.
-4. GoPlus unavailable ≠ safe; the confidence must drop when evidence is missing.
+1. The original evidence (GoPlus/on-chain vault/memory/sender history) OVERRIDES any Investigator or Advocate opinion.
+2. Do not automatically follow the Investigator — a well-argued Advocate case may change the outcome. Equally: do not automatically follow the Advocate.
+3. Testnet: a new wallet is normal; never lower the confidence for novelty alone.
+4. A data source that is unavailable or UNKNOWN is not a clean bill of health; the confidence must drop when evidence is missing.
 5. The output is validated — return ONLY valid JSON.
-6. The HISTORICAL MEMORY block is REAL history from the AEGIS database. If the number "Transactions via AEGIS: N" is N > 0, the reason MUST mention N and it is FORBIDDEN to write "first evaluation" / "has never transacted via AEGIS".
+6. The HISTORICAL MEMORY and SENDER HISTORY blocks are REAL history from the AEGIS database. If "Transactions via AEGIS: N" is N > 0, the reason MUST mention N and it is FORBIDDEN to write "first evaluation" / "has never transacted via AEGIS".
+7. If the SENDER HISTORY block carries a WARNING about prior rejections, weigh it explicitly.
 
 Return ONLY a JSON object:
 {
@@ -538,46 +608,6 @@ ${TX_SOURCE_RULE}
 - VIOLATION example: writing "0 on-chain transactions and the first evaluation" while MEMORY says "Transactions via AEGIS: 15x".
 - DO NOT wrap the JSON in a markdown code fence.
 - DO NOT add any text outside the JSON object.`;
-}
-
-// ── Shared evidence block (used by the Investigator/Advocate/Judge prompts) ─
-function buildEvidenceBlock(input: LLMInput): string {
-  const { sender, recipient, amountBNB, security, intel } = input;
-
-  const goplusSection =
-    security.status === "unavailable"
-      ? `GoPlus Security: UNAVAILABLE (the API cannot be reached; treat as unknown, NOT safe)`
-      : security.status === "malicious"
-      ? `GoPlus Security: MALICIOUS\nFlags detected: ${security.riskFlags.join(", ")}`
-      : `GoPlus Security: CLEAN (no malicious flags)\nFlags checked: ${security.riskFlags.length === 0 ? "none" : security.riskFlags.join(", ")}`;
-
-  const bscscanSection = intel.unavailable
-    ? `BscScan On-chain: UNAVAILABLE (treat as unknown, NOT safe)`
-    : [
-        `BscScan On-chain (BSC Testnet):`,
-        txCountLine(intel),
-        `  Wallet age       : ${intel.walletAgeInDays !== null ? `${intel.walletAgeInDays.toFixed(1)} days` : "unknown (the explorer provides no age data)"}`,
-        `  New wallet       : ${intel.isNewWallet ? "yes" : "no"}`,
-        `  Smart contract   : ${intel.isContract ? "yes" : "no"}`,
-        `  BNB balance      : ${intel.balanceBNB !== null ? `${intel.balanceBNB.toFixed(6)} BNB` : "unknown"}`,
-      ].join("\n");
-
-  return `IMPORTANT CONTEXT:
-- This is a TESTNET environment. A new wallet with zero or low transaction history is NORMAL and EXPECTED.
-- A new testnet wallet does NOT automatically indicate malicious intent.
-- GoPlus data is based on mainnet reputation. A CLEAN status from GoPlus is a strong positive signal.
-- BscScan data reflects testnet activity only — most legitimate testnet wallets do have a low txCount.
-
-EVIDENCE:
-Sender address   : ${sender}
-Recipient address: ${recipient}
-Transfer amount  : ${amountBNB} BNB
-
-${input.memoryContext ?? "AEGIS HISTORICAL MEMORY (INTERNAL history — NOT on-chain data):\n  This address has NEVER transacted via AEGIS before (internal history is empty). This is the first evaluation."}
-
-${goplusSection}
-
-${bscscanSection}`;
 }
 
 // ── JSON Parser (robust) ──────────────────────────────────────────────────────

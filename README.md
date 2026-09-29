@@ -1,9 +1,9 @@
 <div align="center">
 
-# AEGIS - Autonomous Escrow Guardian & Intelligence System
+# AEGIS - Escrow Guardian & Threat-Intelligence Oracle
 ### AI-Powered Smart Escrow & Security Guardian for Web3
 
-**Autonomous AI Agent for On-Chain Transaction Security on BNB Chain**
+**Multi-Agent Escrow Security Oracle for On-Chain Transfers on BNB Chain**
 
 [![BNB Chain](https://img.shields.io/badge/BNB_Chain-Testnet-F0B90B?style=for-the-badge&logo=binance&logoColor=white)](https://testnet.bscscan.com/)
 [![Solidity](https://img.shields.io/badge/Solidity-0.8.20-363636?style=for-the-badge&logo=solidity)](https://soliditylang.org/)
@@ -12,11 +12,13 @@
 [![Ollama](https://img.shields.io/badge/Ollama-qwen3%3A8b-white?style=for-the-badge)](https://ollama.com/)
 [![License](https://img.shields.io/badge/License-ISC-blue?style=for-the-badge)](LICENSE)
 
-> **AEGIS** is an autonomous AI oracle that guards every crypto transfer before it hits the blockchain.
+> **AEGIS** is an AI escrow oracle that guards crypto transfers before they hit the blockchain.
 > Funds are locked in a smart escrow vault, analyzed by a multi-layer AI security pipeline,
 > and only released when the transaction passes - protecting users from scams, phishing, and fraud in real time.
+> What each layer can actually observe is documented in
+> [Evidence Honesty](#evidence-honesty---what-the-oracle-can-and-cannot-see); read it before trusting a green light.
 
-[Architecture](#system-architecture) | [Quick Start](#quick-start) | [Smart Contract](#smart-contract) | [AI Agent Flow](#ai-agent-flow) | [Roadmap](#roadmap--business-model)
+[Architecture](#system-architecture) | [Evidence Honesty](#evidence-honesty---what-the-oracle-can-and-cannot-see) | [Quick Start](#quick-start) | [AI Agent Flow](#ai-agent-flow) | [Roadmap](#roadmap--business-model)
 
 </div>
 
@@ -30,6 +32,7 @@
 - [Project Structure](#project-structure)
 - [Tech Stack](#tech-stack)
 - [Smart Contract](#smart-contract)
+- [Evidence Honesty - What the Oracle Can and Cannot See](#evidence-honesty---what-the-oracle-can-and-cannot-see)
 - [AI Agent Flow](#ai-agent-flow)
 - [User Flow](#user-flow)
 - [Security Pipeline Rules](#security-pipeline-rules)
@@ -44,7 +47,7 @@
 
 ## Overview
 
-**AEGIS** (Autonomous Escrow Guardian & Intelligence System) is a **Web3 AI agent** designed to prevent
+**AEGIS** (Escrow Guardian & Intelligence System) is a **Web3 security oracle** designed to prevent
 fraudulent crypto transactions before they are irreversibly settled on the blockchain.
 
 The core premise: **most crypto scams succeed because transactions are instant and irreversible.**
@@ -65,8 +68,13 @@ through a multi-layer AI security pipeline before funds are released.
 AEGIS intercepts every transfer at the escrow level, then deploys a **three-tier AI analysis pipeline**:
 
 1. **Rule Engine** - Deterministic hard-coded security rules (instant REJECT for known-bad patterns)
-2. **AI Debate System** - A local LLM in Investigator and Judge roles debates the risk with tool-calling
+2. **Three-Agent Debate** - Investigator (tool-calling) -> Advocate (steelman of the opposite case) -> Judge
 3. **Human-in-the-Loop** - Edge cases escalate to a human operator before on-chain settlement
+
+> **Scope note, stated plainly.** AEGIS runs a fixed pipeline, not an autonomous
+> agent loop: gather evidence -> rules -> Investigator (at most one tool round) ->
+> Advocate -> Judge -> guard. The LLM chooses *which* registered tool to call, once.
+> It does not plan, retry, spawn sub-agents, or re-enter the loop on its own.
 
 ---
 
@@ -75,12 +83,12 @@ AEGIS intercepts every transfer at the escrow level, then deploys a **three-tier
 | Feature | Description |
 |---|---|
 | Smart Escrow Vault | Funds locked in AegisVault.sol - never accessible to the oracle owner |
-| Autonomous AI Agent | Local LLM (Qwen3:8b via Ollama) analyzes every transfer automatically |
-| AI Debate System | Two-round Investigator to Judge pipeline with structured JSON reasoning |
-| Tool-Calling Agent | LLM requests 4 on-chain/off-chain tools to gather evidence before deciding |
-| Agent Memory | SQLite-backed memory - AI remembers every past decision per address |
-| GoPlus Integration | Real-time malicious address detection via GoPlus Security Intelligence |
-| BscScan Intelligence | On-chain wallet age, tx history, balance, and contract detection |
+| Three-Agent Debate | Investigator (tool-calling) -> Advocate (own side evidence) -> Judge, structured JSON |
+| Tool-Calling | LLM picks from 4 registered tools, one round only; tools are deny-listed by capability |
+| Agent Memory | SQLite-backed memory, **final decisions only** - both recipient and sender sides |
+| GoPlus Integration | Multi-chain screening of **both** the recipient and the sender (chains 56 + 97) |
+| On-Chain Intel (RPC) | Nonce, balance, EIP-7702-aware contract detection, and real AEGISVault escrow history from `eth_getLogs` |
+| Evidence Honesty | Every number carries its source; `unavailable` is never read as zero or "safe" |
 | Human-in-the-Loop | Uncertain cases sent to human operator who casts the final on-chain vote |
 | Live SSE Stream | Real-time AI debate streamed to the frontend via Server-Sent Events |
 | Escrow Timeout | Funds auto-return to sender after 2 hours if oracle is unresponsive |
@@ -100,14 +108,15 @@ graph TD
     SC -->|EscrowCreated| P["Event Poller<br/>polls every 8s"]
     P --> SP["Security Pipeline"]
 
-    SP --> RE["Rule Engine<br/>10 Hard Rules"]
+    SP --> RE["Rule Engine<br/>11 Hard Rules"]
     RE -->|REJECT| FV["fulfillVerification<br/>on-chain"]
     RE -->|NEEDS_LLM| AI["AI Debate System"]
 
-    AI --> INV["Investigator LLM<br/>Tool Calling"]
-    INV --> TOOLS["Tools<br/>GoPlus / BscScan / Memory"]
-    TOOLS --> JDG["Judge LLM<br/>Independent Review"]
-    JDG --> GRD["Final Guard<br/>Confidence Check"]
+    AI --> INV["Investigator LLM<br/>Tool Calling (1 round)"]
+    INV --> TOOLS["Tools<br/>GoPlus / RPC / AEGIS DB"]
+    TOOLS --> ADV["Advocate LLM<br/>Own side evidence"]
+    ADV --> JDG["Judge LLM<br/>Weighs evidence + both opinions"]
+    JDG --> GRD["Final Guard<br/>TI override / confidence / lean split"]
 
     GRD -->|conf >= 0.80| FV
     GRD -->|conf 0.55-0.80| HUM["Human Review"]
@@ -117,7 +126,7 @@ graph TD
     FV -->|RELEASE or REJECT| SC
 
     B <--> DB["SQLite<br/>Agent Memory"]
-    B <--> EXT["External APIs<br/>GoPlus / BscScan / Ollama"]
+    B <--> EXT["External<br/>GoPlus / RPC / Ollama"]
 ```
 ---
 
@@ -154,7 +163,7 @@ AEGIS/
 |   |   |-- tools.ts                  4 AI tools (on-chain + AEGIS DB queries)
 |   |   |-- agentMemory.ts            SQLite-based per-address decision memory
 |   |   |-- goplusChecker.ts          GoPlus Security API integration
-|   |   |-- bscscanChecker.ts         BscScan on-chain wallet intelligence
+|   |   |-- bscscanChecker.ts         On-chain intel: RPC + AegisVault event log
 |   |   |-- db.ts                     SQLite schema + query helpers
 |   |   |-- streamBus.ts              SSE event bus (publish/subscribe pattern)
 |   |   |-- abi.ts                    AegisVault ABI for viem
@@ -219,9 +228,10 @@ AEGIS/
 | viem | ^2.56 | Type-safe Ethereum/BNB Chain client |
 | better-sqlite3 | ^13.0 | Agent memory and decision history store |
 | Ollama | Local | Local LLM inference runtime |
-| Qwen3:8b | via Ollama | Primary AI model for Investigator and Judge roles |
-| GoPlus API | v1 | Real-time malicious address and phishing detection |
-| BscScan API | Testnet v1 | On-chain wallet intelligence: tx count, age, balance |
+| Qwen3:8b | via Ollama | Investigator, Advocate and Judge |
+| GoPlus API | v1 | Malicious-address and phishing detection, per chain |
+| BSC testnet RPC | public node | Nonce, balance, bytecode, and `AegisVault` escrow history |
+| BscScan API | Testnet v1 | **Deprecated.** Kept only as a best-effort tx source; see the honesty notes below |
 
 ### Frontend
 
@@ -307,41 +317,75 @@ submitTransfer(recipient)
 
 ---
 
+## Evidence Honesty - What the Oracle Can and Cannot See
+
+This section exists because most of the original "protection" was in fact reading
+data that does not exist on BSC testnet. Each item below is what the code does now.
+
+| Signal | Reality on BSC testnet | How AEGIS handles it |
+|---|---|---|
+| Wallet age | Not obtainable - needs an indexed history, and the explorer is deprecated | Removed. The rule engine never branches on it. |
+| Transaction count | RPC nonce = **outgoing** transactions only | Carried with `txCountSource`; the reason text says "outgoing", and any total below the nonce is corrected as impossible |
+| Wallet "newness" | A boolean `isNewWallet` conflated "no history" with "no data" | 4-level classification `novel / barelyUsed / established / unknown`; `unknown` fires no rule |
+| AEGIS escrow history | Was never read on-chain at all | Read from `AegisVault` `EscrowCreated` logs via `eth_getLogs`, chunked, with per-range memoisation |
+| Vault deploy block | No public testnet node serves historical `eth_getCode` | Treated as UNKNOWN; the scan is anchored at the block budget and the result is flagged `windowLimited` (a lower bound), never a silent zero |
+| Log query failures | A single refused range used to lose the whole history | Ranges are split recursively; only a total failure is `unavailable`, a partial one is a lower bound |
+| EIP-7702 delegations | `eth_getCode` returns a 23-byte designator, so EOAs look like contracts | `classifyCode()` separates delegation from contract. Every standard Hardhat account on this chain is delegated - Rule 6 was rejecting normal wallets |
+| GoPlus coverage | A single chain call, silently partial when one chain failed | Per-chain results: `queriedChains`, `flaggedChains`, `failedChains`; a partial failure is never reported as clean |
+| Simulated data | A hard-coded list of "demo malicious" addresses that the oracle reported as real | Opt-in only (`GOPLUS_SIMULATE=true` + explicit address list) and every result is tagged `simulated: true` |
+| Agent memory | Counted `pending_human` rows as verdicts | `final` decisions only; `eligible` (funds released) is separate from `human_vote` |
+
+---
+
 ## AI Agent Flow
 
 ```mermaid
 flowchart TD
-    A["EscrowCreated<br/>Event Detected"] --> B["Gather Evidence<br/>GoPlus + BscScan + Memory"]
-    B --> C["Rule Engine<br/>10 Deterministic Rules"]
+    A["EscrowCreated<br/>Event Detected"] --> B["Gather Evidence<br/>GoPlus + RPC + AegisVault logs + Memory"]
+    B --> C["Rule Engine<br/>11 Deterministic Rules"]
 
     C -->|Hard Rule Hit| D["HARD REJECT<br/>AI Explanation Generated"]
     C -->|Ambiguous| E["Investigator LLM<br/>Round 1 Analysis"]
 
     E -->|needs data| F["Tool Execution<br/>sender profile / recipient txs / AEGIS history"]
     F --> G["Investigator LLM<br/>Round 2 Final"]
-    G --> H["Judge LLM<br/>Independent Verdict"]
+    G --> H["Advocate LLM<br/>Steelman + own side evidence"]
+    H --> I["Judge LLM<br/>Weighs evidence and both opinions"]
 
-    H --> I["Final Guard"]
-    I -->|GoPlus Malicious| D
-    I -->|conf < 0.55| J["FAIL-SAFE REJECT"]
-    I -->|conf 0.55-0.80| K["HOLD - Human Review"]
-    I -->|conf >= 0.80| L["LLM Decides<br/>eligible true or false"]
+    I --> J["Final Guard"]
+    J -->|GoPlus malicious<br/>recipient OR sender| D
+    J -->|conf < 0.55| K["FAIL-SAFE REJECT"]
+    J -->|conf 0.55-0.80| L["HOLD - Human Review"]
+    J -->|Investigator vs Judge<br/>lean differently| L
+    J -->|conf >= 0.80| M["LLM Decides<br/>eligible true or false"]
 
-    D  --> M["fulfillVerification<br/>stored on-chain"]
-    J  --> M
-    K  --> M
-    L  --> M
+    D  --> N["fulfillVerification<br/>stored on-chain"]
+    K  --> N
+    L  --> N
+    M  --> N
 ```
+
+Guard order matters and is enforced by the red-team suite: the threat-intelligence
+override runs **first**, so a GoPlus-flagged address is never recorded as a plain
+`fail_safe` just because the Judge also happened to be unsure. Both ends of the
+transfer are screened - a flagged **sender** blocks the transfer too.
 ### AI Tool Catalog
 
 | Tool Name | Data Source | Description |
 |---|---|---|
-| get_sender_profile | GoPlus + BscScan + RPC node | Full security and on-chain wallet profile of sender |
-| get_recipient_recent_txs | BscScan Testnet API | Last 10 on-chain transactions of recipient |
-| get_sender_db_history | SQLite AEGIS DB | Complete AEGIS escrow history for this sender |
+| get_sender_profile | GoPlus + RPC + AegisVault logs | Security status and account profile (novelty, nonce, balance, vault history) of the sender |
+| get_recipient_recent_txs | BscScan Testnet API (best-effort) | Last 10 on-chain transactions of recipient - reports `unavailable` when the explorer cannot answer |
+| get_sender_db_history | SQLite AEGIS DB | Complete AEGIS escrow history for this sender (final decisions only) |
 | get_recipient_db_history | SQLite AEGIS DB | All escrows ever addressed to recipient (all senders) |
 
 Tool execution is parallel and failure-isolated. Unavailable tools report UNKNOWN - never safe.
+Anything outside the catalog is dropped before execution, so a prompt injection
+cannot reach the filesystem, the network, or the escrow.
+
+The Advocate additionally collects **its own** side evidence in code (sender GoPlus
+status, sender novelty, both sides' AEGIS DB history) before it argues. That
+pre-fetch is deterministic - no extra LLM call - and its sender result also drives
+the hard override in the final guard.
 
 ---
 
@@ -376,29 +420,42 @@ Only the LLM with confidence >= threshold can produce an APPROVE decision.
 
 | Rule ID | Trigger Condition | Decision |
 |---|---|---|
-| RULE_1A | GoPlus flags address as malicious with specific risk flags | HARD REJECT |
-| RULE_1B | GoPlus flags address as malicious with no specific flags listed | HARD REJECT |
-| RULE_8 | GoPlus detects phishing, honeypot, stealing, or fake-token activity | HARD REJECT |
-| RULE_6 | Recipient is a smart contract address, not an EOA wallet | HARD REJECT |
-| RULE_7 | Recipient balance = 0 BNB AND transfer amount >= SIGNIFICANT threshold | HARD REJECT |
-| RULE_2 | New wallet + low tx count + significant amount (all three required) | HARD REJECT |
-| RULE_3 | New wallet + low tx count + amount below SIGNIFICANT threshold | NEEDS_LLM |
+| RULE_1A | GoPlus flags the address as malicious with specific risk flags | HARD REJECT |
+| RULE_1B | GoPlus flags the address as malicious with no specific flags listed | HARD REJECT |
+| RULE_8 | GoPlus phishing / honeypot / stealing / fake-token labels in `rawData` | HARD REJECT |
+| RULE_6 | Recipient is a real smart contract, not an EOA (EIP-7702 delegations are EOAs) | HARD REJECT |
+| RULE_2 | Novel empty account (RPC nonce 0 + zero balance) + amount >= SIGNIFICANT | HARD REJECT |
+| RULE_7 | Recipient balance = 0 BNB AND amount >= SIGNIFICANT | HARD REJECT |
+| RULE_3 | Novel empty account + amount below SIGNIFICANT | NEEDS_LLM |
 | RULE_4 | GoPlus API unavailable - security status unconfirmable | NEEDS_LLM |
-| RULE_5 | BscScan API completely unavailable - on-chain data unverifiable | NEEDS_LLM |
-| RULE_9 | Transfer amount >= VERY_LARGE threshold (default 1 BNB) to any wallet | NEEDS_LLM |
-| RULE_10 | Medium-age wallet + low activity + significant amount | NEEDS_LLM |
+| RULE_5 | On-chain data unavailable - data unverifiable | NEEDS_LLM |
+| RULE_9 | Amount >= VERY_LARGE (default 1 BNB) to any wallet | NEEDS_LLM |
+| RULE_10 | Pooling hub: >= POOLING_HUB_MIN_SENDERS distinct senders already funded this recipient through AEGIS, + significant amount | NEEDS_LLM |
 | RULE_DEFAULT | No deterministic rejection signal found | NEEDS_LLM |
+
+`novel` is derived from RPC facts only (nonce 0 and zero balance). It is **not**
+inferred from a missing data source: when the RPC or the vault log cannot answer,
+novelty is `unknown` and no novelty rule fires. The previous `isNewWallet` boolean
+treated "no history" and "no data" as the same thing, which hard-REJECTed ordinary
+users.
 
 Default configurable thresholds:
 
 | Environment Variable | Default | Meaning |
 |---|---|---|
-| NEW_WALLET_DAYS | 1 day | Age below this = new wallet classification |
-| LOW_TX_COUNT_THRESHOLD | 2 | Tx count at or below this = low activity |
 | SIGNIFICANT_TRANSFER_BNB | 0.01 BNB | Amount at or above this = significant transfer |
 | VERY_LARGE_TRANSFER_BNB | 1.0 BNB | Amount at or above this = escalate regardless |
-| MEDIUM_WALLET_DAYS | 30 days | Upper bound of medium-age wallet category |
-| MEDIUM_TX_THRESHOLD | 10 | Max tx count for medium wallet low-activity |
+| POOLING_HUB_MIN_SENDERS | 3 | Distinct AEGIS senders that mark a recipient as a pooling hub |
+| GOPLUS_CHAIN_IDS | `56,97` | Chains screened by GoPlus (per chain, failures reported separately) |
+| VAULT_SCAN_LOOKBACK_BLOCKS | 500000 | Block budget for the `AegisVault` escrow-history scan |
+| VAULT_LOG_CHUNK_BLOCKS | 20000 | Chunk size per `eth_getLogs` (public testnet nodes cap the range) |
+| VAULT_LOG_CONCURRENCY | 6 | Chunks fetched in parallel |
+
+The old age/activity knobs (`NEW_WALLET_DAYS`, `LOW_TX_COUNT_THRESHOLD`,
+`MEDIUM_WALLET_DAYS`, `MEDIUM_TX_THRESHOLD`) were **removed**: they only fed rules
+that read a wallet age and a transaction list, neither of which the deprecated
+BSC testnet explorer returns, so those rules could never fire. A tunable knob that
+controls nothing is worse than no knob - it reads like protection.
 
 ---
 
@@ -545,10 +602,11 @@ Each event message is a JSON object with the following structure:
 ### Phase 1 - Hackathon MVP [Current - September 2026]
 
 - [x] AegisVault smart contract with escrow and oracle pattern
-- [x] 9-step AI security pipeline: Rule Engine, Investigator LLM, Judge LLM
-- [x] Tool-calling agent with 4 data gathering tools
-- [x] Agent memory via SQLite with complete per-address decision history
-- [x] GoPlus Security and BscScan external API integration
+- [x] AI security pipeline: Rule Engine -> Investigator -> Advocate -> Judge -> guard
+- [x] Tool-calling with 4 data gathering tools (deny-listed by capability)
+- [x] Agent memory via SQLite, final decisions only, recipient **and** sender side
+- [x] GoPlus multi-chain screening of recipient and sender
+- [x] Real on-chain AEGIS escrow history read from `AegisVault` logs over RPC
 - [x] Human-in-the-loop escalation with full frontend UI
 - [x] Live SSE debate stream with real-time frontend phase updates
 - [x] Emergency pause and two-step oracle rotation with 24-hour timelock
@@ -645,12 +703,15 @@ Tier 4: TOKEN ECONOMY (AGS Governance Token)
 
 #### Pitch Narrative for Investors
 
-Over $10 billion USD is lost to crypto scams every year. AEGIS is the first autonomous AI guardian
-that stops fraudulent transactions before they happen - not after. We have shipped a working product
-deployed on-chain with a novel AI debate architecture that has no direct precedent in Web3 security.
-Every transfer enters an escrow vault, passes through a 10-rule deterministic engine, and is evaluated
-by a two-round LLM debate before a single token moves. The oracle cryptographically cannot take user
-funds. The system fails safe by design. Human operators hold override authority.
+Over $10 billion USD is lost to crypto scams every year. AEGIS stops fraudulent transactions
+before they happen - not after. We have shipped a working product deployed on-chain with a
+three-agent debate architecture (Investigator, Advocate, Judge) that has no direct precedent in
+Web3 security. Every transfer enters an escrow vault, passes through an 11-rule deterministic
+engine, and is evaluated by that debate before a single token moves. Both ends of the transfer are
+screened against threat intelligence, and a flag overrides the debate outright. The oracle
+cryptographically cannot take user funds. The system fails safe by design. Human operators hold
+override authority. The pipeline is a fixed, bounded process - not a self-directed agent loop -
+and the evidence limits are documented rather than papered over.
 
 #### Key Performance Metrics for Investor Due Diligence
 
@@ -753,4 +814,4 @@ Built for the Web3 Hackathon 2026.
 
 Protecting every transfer, one escrow at a time.
 
-**AEGIS** - Autonomous Escrow Guardian and Intelligence System
+**AEGIS** - Escrow Guardian and Threat-Intelligence Oracle

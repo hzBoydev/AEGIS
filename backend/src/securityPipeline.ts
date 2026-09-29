@@ -1,24 +1,27 @@
 import { isAddress } from "viem";
 import { config } from "./config.js";
 import { checkAddressSecurity, type SecurityCheckResult } from "./goplusChecker.js";
-import { getOnChainIntel, type OnChainIntel } from "./bscscanChecker.js";
+import { getOnChainIntel, unknownIntel, type OnChainIntel } from "./bscscanChecker.js";
 import { runRules } from "./ruleEngine.js";
 import {
   callLLM,
   callAdvocate,
   callJudge,
   generateHardRuleExplanation,
+  type LLMInput,
   type LLMDecision,
   type AdvocateResult,
   type DebateTranscript,
 } from "./aiAnalyzer.js";
 import {
   getAddressMemory,
+  getSenderMemory,
   formatMemoryForPrompt,
   formatMemoryFacts,
+  formatSenderMemoryForPrompt,
   type AddressMemory,
 } from "./agentMemory.js";
-import { executeTools, sanitizeNeedsData } from "./tools.js";
+import { executeTools, sanitizeNeedsData, buildAdvocateEvidence } from "./tools.js";
 import { publish } from "./streamBus.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -58,19 +61,29 @@ export interface FinalDecision {
 // ── Final guards (exported & red-team tested — do not duplicate the logic) ───
 type FinalGuard =
   | { kind: "fail_low_confidence" }
-  | { kind: "override_malicious" }
+  | { kind: "override_malicious"; side: "recipient" | "sender" }
   | { kind: "needs_human"; reason: string }
   | { kind: "judge"; eligible: boolean };
 
 /**
  * The final guard that DETERMINES the outcome after the Judge.
+ *
  * Order (HUMAN_ESCALATION_ENABLED=true, default):
- *   1) conf < humanMin → fail-safe REJECT (conf too low to be worth a vote)
- *   2) GoPlus malicious → hard override REJECT (no vote)
+ *   1) GoPlus malicious → hard override REJECT (no vote, no debate can beat it)
+ *   2) conf < humanMin → fail-safe REJECT (conf too low to be worth a vote)
  *   3) conf < threshold → HOLD for human (grey zone)
  *   4) Investigator vs Judge lean differently → HOLD for human (hearing flipped)
  *   5) otherwise → follow the Judge
- * With escalation disabled: the old behaviour — conf < threshold → fail-safe first.
+ * With escalation disabled: the same override first, then the old behaviour —
+ * conf < threshold → fail-safe.
+ *
+ * The malicious override runs FIRST on purpose. It used to run after the
+ * confidence check, so a GoPlus-flagged address that also produced a low
+ * confidence was recorded as a plain `fail_safe` — the outcome was still
+ * REJECT, but the "GoPlus flagged this address" attribution was lost from the
+ * UI, the event stream and the agent memory, making a real detection
+ * indistinguishable from a model hiccup.
+ *
  * The red-team calls this function directly.
  */
 export function evaluateFinalOutcome(input: {
@@ -78,27 +91,36 @@ export function evaluateFinalOutcome(input: {
   judgeConfidence: number;
   investigatorEligible?: boolean | undefined;
   securityStatus: SecurityCheckResult["status"];
+  /** GoPlus status of the SENDER; defaults to "clean" when not screened. */
+  senderSecurityStatus?: SecurityCheckResult["status"] | undefined;
   threshold: number;
   humanMin: number;
   humanEscalationEnabled: boolean;
 }): FinalGuard {
   const { humanEscalationEnabled, humanMin, threshold } = input;
 
+  // 1) Threat intelligence always wins, regardless of how unsure the Judge was.
+  // Both ends of the transfer are screened. Only checking the recipient left a
+  // real laundering path open: in a live test the Advocate produced GoPlus flags
+  // for the SENDER (stealing_attack, sanctioned) and the Judge still released the
+  // transfer at 0.95 confidence, because a recipient-only oracle has no say over
+  // who is sending the money.
+  if (input.securityStatus === "malicious") {
+    return { kind: "override_malicious", side: "recipient" };
+  }
+  if (input.senderSecurityStatus === "malicious") {
+    return { kind: "override_malicious", side: "sender" };
+  }
+
   if (!humanEscalationEnabled) {
     if (input.judgeConfidence < threshold) {
       return { kind: "fail_low_confidence" };
-    }
-    if (input.securityStatus === "malicious") {
-      return { kind: "override_malicious" };
     }
     return { kind: "judge", eligible: input.judgeEligible };
   }
 
   if (input.judgeConfidence < humanMin) {
     return { kind: "fail_low_confidence" };
-  }
-  if (input.securityStatus === "malicious") {
-    return { kind: "override_malicious" };
   }
   if (input.judgeConfidence < threshold) {
     return {
@@ -189,7 +211,7 @@ export async function runSecurityPipeline(
   }
 
   // ── Step 2: Query GoPlus + BscScan in parallel ────────────────────────────
-  console.log(`[Security] Querying GoPlus + BscScan in parallel...`);
+  console.log(`[Security] Querying GoPlus + on-chain intel (RPC + vault log) in parallel...`);
   publish({
     escrowId,
     phase: "evidence",
@@ -203,41 +225,41 @@ export async function runSecurityPipeline(
       console.warn(`[GoPlus] Unexpected error:`, err);
       return { status: "unavailable", riskFlags: [], source: "unavailable" };
     }),
-    getOnChainIntel(recipient).catch((err): OnChainIntel => {
-      console.warn(`[BscScan] Unexpected error:`, err);
-      return {
-        txCount: null,
-        txCountSource: "none",
-        walletAgeInDays: null,
-        isNewWallet: false,
-        isContract: false,
-        balanceBNB: null,
-        unavailable: true,
-      };
+    getOnChainIntel(recipient).catch((err) => {
+      console.warn(`[OnChain] Unexpected error:`, err);
+      return unknownIntel();
     }),
   ]);
 
   // ── Log evidence ──────────────────────────────────────────────────────────
   console.log(
-    `[GoPlus]  status=${security.status} flags=[${security.riskFlags.join(", ")}]`
+    `[GoPlus]  status=${security.status} flags=[${security.riskFlags.join(", ")}]` +
+      (security.simulated ? " *** SIMULATED ***" : "") +
+      (security.flaggedChains ? ` chains=${security.flaggedChains.join("+")}` : "") +
+      (security.failedChains?.length
+        ? ` PARTIAL (failed: ${security.failedChains.join("+")})`
+        : "")
   );
   console.log(
-    `[BscScan] txCount=${intel.txCount ?? "?"}(${intel.txCountSource}) ` +
-    `age=${intel.walletAgeInDays !== null ? `${intel.walletAgeInDays.toFixed(1)}d` : "?"} ` +
-    `isNew=${intel.isNewWallet} ` +
-    `isContract=${intel.isContract} ` +
-    `balance=${intel.balanceBNB !== null ? `${intel.balanceBNB.toFixed(4)}BNB` : "?"}`
+    `[OnChain] txCount=${intel.txCount ?? "?"}(${intel.txCountSource}) ` +
+      `profile=${intel.novelty} ` +
+      `isContract=${intel.isContract} ` +
+      `balance=${intel.balanceBNB !== null ? `${intel.balanceBNB.toFixed(4)}BNB` : "?"} ` +
+      `vaultIn=${intel.aegisEscrowIn} senders=${intel.aegisDistinctSenders}` +
+      (intel.aegisLogsUnavailable ? " (logs UNKNOWN)" : "") +
+      (intel.aegisWindowLimited ? " (window-limited)" : "")
   );
   publish({
     escrowId,
     phase: "evidence",
     status: "ok",
-    label: `GoPlus ${security.status}`,
+    label: `GoPlus ${security.status}${security.simulated ? " (simulated)" : ""}`,
     detail:
-      `txCount=${intel.txCount ?? "?"}(${intel.txCountSource}), age=${intel.walletAgeInDays !== null ? intel.walletAgeInDays.toFixed(1) + "d" : "?"}, ` +
+      `txCount=${intel.txCount ?? "?"}(${intel.txCountSource}), profile=${intel.novelty}, ` +
       `balance=${intel.balanceBNB !== null ? intel.balanceBNB.toFixed(4) + " BNB" : "?"}` +
+      `, aegisEscrows=${intel.aegisEscrowIn}` +
       (security.riskFlags.length > 0 ? `, flags=[${security.riskFlags.join(", ")}]` : ""),
-    data: { goplus: security.status, flags: security.riskFlags },
+    data: { goplus: security.status, flags: security.riskFlags, simulated: security.simulated === true },
   });
 
   // ── Step 3: Run rule engine ───────────────────────────────────────────────
@@ -255,19 +277,30 @@ export async function runSecurityPipeline(
     data: { decision: ruleResult.decision, rule: ruleResult.triggeredRule },
   });
 
-  // ── Step 4: Load agent memory (used for the hard rule explanation & AI hearing)
+  // ── Step 4: Load agent memory (recipient AND sender) ──────────────────────
+  // Both sides matter: the recipient's history says "has this account ever been
+  // blocked", the sender's says "is this someone who was already blocked trying
+  // again". Previously only the recipient was loaded.
   const memory = getAddressMemory(recipient);
   const memoryContext = formatMemoryForPrompt(memory);
+  const senderMemory = getSenderMemory(sender);
+  const senderContext = formatSenderMemoryForPrompt(senderMemory);
 
   if (memory.totalSeen > 0) {
     console.log(
       `[Memory]  Recipient seen before: ${memory.totalSeen}x | ` +
       `approved=${memory.totalApproved} rejected=${memory.totalRejected} | ` +
-      `hadHardRule=${memory.hadHardRuleReject}`
+      `humanRej=${memory.humanRejections} strongReject=${memory.hadHardRuleReject}` +
+      (memory.pendingHuman > 0 ? ` | pendingHuman=${memory.pendingHuman}` : "")
     );
   } else {
-    console.log(`[Memory]  First time seeing this recipient — no history.`);
+    console.log(`[Memory]  First finalized AEGIS decision for this recipient.`);
   }
+  console.log(
+    `[Memory]  Sender escrows=${senderMemory.totalSent} ` +
+    `approved=${senderMemory.approved} rejected=${senderMemory.rejected} ` +
+    `strongRejections=${senderMemory.strongRejections}`
+  );
 
   // ── Step 5: Hard REJECT from rules → generate AI explanation, then stop ────
   if (ruleResult.decision === "REJECT") {
@@ -325,7 +358,9 @@ export async function runSecurityPipeline(
 
   let investigator: LLMDecision;
   try {
-    investigator = await callLLM({ sender, recipient, amountBNB, security, intel, memoryContext });
+    investigator = await callLLM({
+      sender, recipient, amountBNB, security, intel, memoryContext, senderContext,
+    });
     // The Facts line is also injected into the Investigator's reason — the hearing
     // transcript read by users stays consistent even when the model violates the
     // formatting rules.
@@ -449,6 +484,7 @@ export async function runSecurityPipeline(
             security,
             intel,
             memoryContext,
+            senderContext,
             toolResults: exec.block,
             followUp: true,
           });
@@ -495,7 +531,46 @@ export async function runSecurityPipeline(
   }
 
   // ── Step 6c: MULTI-AGENT DEBATE — Advocate (steelman of the opposite position) ─
-  const llmInput = { sender, recipient, amountBNB, security, intel, memoryContext };
+  // The Advocate collects its OWN side evidence in code first. It used to argue
+  // with less information than the Investigator (no sender profile, no sender
+  // history), which made the adversarial round weak.
+  const advocateEvidence = await buildAdvocateEvidence({ sender, recipient });
+  const advocateContext = advocateEvidence.context;
+  // The sender-side GoPlus result is DECISIVE, not advisory: the Advocate found a
+  // GoPlus-flagged sender during a live test and the Judge released the transfer
+  // at 0.95 confidence anyway. The guard below makes that impossible, and the
+  // screen is fetched here (deterministically) rather than being left to whichever
+  // agent happens to ask for a sender profile.
+  const senderSecurity = advocateEvidence.senderSecurity;
+  if (senderSecurity.status === "malicious") {
+    console.log(
+      `[Sender]  GoPlus flags the SENDER itself: [${senderSecurity.riskFlags.join(", ")}] ` +
+        `(chains ${(senderSecurity.flaggedChains ?? []).join("+") || "n/a"})`
+    );
+    publish({
+      escrowId,
+      phase: "evidence",
+      status: "ok",
+      label: "GoPlus flags the SENDER",
+      detail: `The sender is flagged: ${senderSecurity.riskFlags.join(", ")}`,
+      data: { senderFlags: senderSecurity.riskFlags },
+    });
+  } else {
+    console.log(
+      `[Sender]  GoPlus sender check: ${senderSecurity.status}` +
+        (senderSecurity.status === "unavailable" ? " (unknown — not treated as safe)" : "")
+    );
+  }
+  const llmInput: LLMInput = {
+    sender,
+    recipient,
+    amountBNB,
+    security,
+    intel,
+    memoryContext,
+    senderContext,
+    advocateContext,
+  };
   let advocate: AdvocateResult | null = null;
 
   try {
@@ -622,6 +697,7 @@ export async function runSecurityPipeline(
     judgeConfidence: judge.confidence,
     investigatorEligible: investigator.eligible,
     securityStatus: security.status,
+    senderSecurityStatus: senderSecurity.status,
     threshold: config.LLM_CONFIDENCE_THRESHOLD,
     humanMin: config.HUMAN_CONF_MIN,
     humanEscalationEnabled: config.HUMAN_ESCALATION_ENABLED,
@@ -648,10 +724,14 @@ export async function runSecurityPipeline(
   }
 
   // ── Step 8: Hard override check ───────────────────────────────────────────
-  // GoPlus malicious ALWAYS wins. The debate cannot beat the security intel.
+  // GoPlus malicious ALWAYS wins, on either side of the transfer. The debate
+  // cannot beat the security intel.
   if (guard.kind === "override_malicious") {
+    const flaggedSide = guard.side === "sender" ? senderSecurity : security;
+    const flaggedAddress = guard.side === "sender" ? sender : recipient;
     console.log(
-      `[Final]   REJECT (hard override — GoPlus malicious overrides Judge eligible=${judge.eligible})`
+      `[Final]   REJECT (hard override — GoPlus malicious on the ${guard.side.toUpperCase()} ` +
+        `overrides Judge eligible=${judge.eligible})`
     );
     const overrideExplanation = await generateHardRuleExplanation({
       recipient,
@@ -659,17 +739,21 @@ export async function runSecurityPipeline(
       security,
       intel,
       memoryContext,
-      triggeredRule: "OVERRIDE_GOPLUS_MALICIOUS",
-      ruleContext: `GoPlus detected malicious signals [${security.riskFlags.join(", ")}] on this address. The hard security rule overrides the AI debate decision.`,
+      triggeredRule:
+        guard.side === "sender" ? "OVERRIDE_GOPLUS_MALICIOUS_SENDER" : "OVERRIDE_GOPLUS_MALICIOUS",
+      ruleContext:
+        guard.side === "sender"
+          ? `GoPlus detected malicious signals [${flaggedSide.riskFlags.join(", ")}] on the SENDER (${flaggedAddress}). Routing flagged funds through the escrow is a laundering pattern; the hard security rule overrides the AI debate decision regardless of how clean the recipient looks.`
+          : `GoPlus detected malicious signals [${flaggedSide.riskFlags.join(", ")}] on the RECIPIENT (${flaggedAddress}). The hard security rule overrides the AI debate decision.`,
     });
     const finalReason = finalizeReason(overrideExplanation, intel, memory);
     publish({
       escrowId,
       phase: "final",
       status: "done",
-      label: "REJECTED (GoPlus override)",
+      label: `REJECTED (GoPlus ${guard.side} override)`,
       detail: finalReason,
-      data: { eligible: false, decidedBy: "hard_rule" },
+      data: { eligible: false, decidedBy: "hard_rule", flaggedSide: guard.side },
     });
     return {
       eligible: false,
@@ -677,7 +761,8 @@ export async function runSecurityPipeline(
       riskLevel: "CRITICAL",
       reason: finalReason,
       decidedBy: "hard_rule",
-      triggeredRule: "OVERRIDE_GOPLUS_MALICIOUS",
+      triggeredRule:
+        guard.side === "sender" ? "OVERRIDE_GOPLUS_MALICIOUS_SENDER" : "OVERRIDE_GOPLUS_MALICIOUS",
       toolsUsed,
       debate,
       evidence: { security, intel },
@@ -780,14 +865,18 @@ function finalizeReason(
       ? "transaction count = unknown"
       : intel.txCountSource === "explorer"
         ? `on-chain transactions for the account = ${intel.txCount} (explorer, in+out)`
-        : `outgoing transactions = ${intel.txCount} (RPC nonce — incoming transactions are not counted; the explorer is unavailable)`;
+        : `outgoing transactions = ${intel.txCount} (RPC nonce — incoming transactions are not counted)`;
+  const vaultPart = intel.aegisLogsUnavailable
+    ? "AEGIS vault history = unknown"
+    : `AEGIS vault escrows = ${intel.aegisEscrowIn}` +
+      (intel.aegisWindowLimited ? " (partial window, lower bound)" : "");
   const memori = formatMemoryFacts(memory);
   const body = normalizeReasonFacts(reason, intel, memory);
   // The Facts line is placed at the START: the reason is sent on-chain via
   // truncateReason() (MAX_REASON_BYTES limit ~1 KB) — if it were at the end,
   // the first part would be the one truncated. This function is idempotent
   // (an old Facts line is discarded first).
-  return `Facts: ${txPart} · AEGIS history = ${memori}\n${body}`;
+  return `Facts: ${txPart} · ${vaultPart} · AEGIS history = ${memori}\n${body}`;
 }
 
 /**
@@ -813,14 +902,48 @@ function normalizeReasonFacts(
       new RegExp(`\\b${n}\\s+on-chain transactions\\b`, "gi"),
       `${n} outgoing transactions (RPC nonce)`
     );
+    // The 8B model also reaches for the wording our own novelty label uses
+    // ("nonce 0", "never sent an outgoing transaction") and then contradicts the
+    // Facts line when the nonce is not actually 0. Observed live: a 4166-nonce
+    // address explained as "never sent an outgoing transaction (nonce 0)".
+    if (n > 0) {
+      out = out
+        .replace(/\bnonce\s*0\b/gi, `nonce ${n}`)
+        .replace(
+          /\b(?:has\s+)?never sent an outgoing transaction\b/gi,
+          `has sent ${n} outgoing transactions`
+        )
+        .replace(
+          /\bhas never made an outgoing transaction\b/gi,
+          `has made ${n} outgoing transactions`
+        )
+        .replace(
+          /\bno outgoing transactions\b/gi,
+          `${n} outgoing transactions (RPC nonce)`
+        );
+    }
     out = out.replace(
       new RegExp(`\\btransaction history\\s+${n}\\b`, "gi"),
       `${n} outgoing transactions`
     );
-    out = out.replace(
-      /\bno on-chain transactions\b/gi,
-      "no outgoing transactions (RPC nonce)"
-    );
+    // Any total BELOW the nonce is arithmetically impossible — the nonce is the
+    // number of transactions this account has actually sent. Observed live: the
+    // second-round Investigator described a 4166-nonce address as having
+    // "0 on-chain transactions".
+    if (n > 0) {
+      out = out.replace(/\b(\d+)\s+on-chain transactions\b/gi, (m, numStr: string) =>
+        Number(numStr) < n ? `at least ${n} outgoing transactions (RPC nonce)` : m
+      );
+      out = out.replace(
+        /\bno on-chain transactions\b/gi,
+        `at least ${n} outgoing transactions (RPC nonce)`
+      );
+    } else {
+      out = out.replace(
+        /\bno on-chain transactions\b/gi,
+        "no outgoing transactions (RPC nonce)"
+      );
+    }
   } else if (intel.txCount === null) {
     out = out.replace(
       /\b\d+\s+on-chain transactions\b/gi,
@@ -845,6 +968,8 @@ function normalizeReasonFacts(
   }
 
   return out
+    // Cosmetic but observed live: the 8B model writes "0.0005 B0NB".
+    .replace(/\bB(\d+[.,]?\d*)NB\b/g, "B$1NB")
     .replace(/[ \t]{2,}/g, " ")
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{2,}/g, "\n")
@@ -867,15 +992,7 @@ function failSafe(
     toolsUsed: [],
     evidence: {
       security: security ?? { status: "unavailable", riskFlags: [], source: "unavailable" },
-      intel: intel ?? {
-        txCount: null,
-        txCountSource: "none",
-        walletAgeInDays: null,
-        isNewWallet: false,
-        isContract: false,
-        balanceBNB: null,
-        unavailable: true,
-      },
+      intel: intel ?? unknownIntel(),
     },
   };
 }

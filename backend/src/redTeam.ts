@@ -11,7 +11,7 @@ import { parseLLMOutput, callLLM, callJudge } from "./aiAnalyzer.js";
 import { sanitizeNeedsData, TOOL_CATALOG } from "./tools.js";
 import { publish } from "./streamBus.js";
 import type { SecurityCheckResult } from "./goplusChecker.js";
-import type { OnChainIntel } from "./bscscanChecker.js";
+import { classifyCode, type OnChainIntel } from "./bscscanChecker.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 export type RedTeamCategory =
@@ -70,19 +70,59 @@ const INTEL_OK: OnChainIntel = {
   txCount: 50,
   txCountSource: "explorer",
   walletAgeInDays: 400,
-  isNewWallet: false,
+  novelty: "barelyUsed",
+  isNovelAccount: false,
   isContract: false,
+  eip7702Delegated: false,
   balanceBNB: 5,
+  aegisEscrowIn: 2,
+  aegisEscrowOut: 1,
+  aegisDistinctSenders: 2,
+  aegisFirstSeenBlock: 1000n,
+  aegisLastSeenBlock: 2500n,
+  aegisLogsUnavailable: false,
+  aegisWindowLimited: false,
   unavailable: false,
 };
+// Novel account: RPC nonce 0, zero balance, no AEGIS escrow history. The
+// walletAgeInDays value is intentionally stale/nonsense — nothing may branch on
+// it any more (the explorer does not provide age data on BSC testnet).
 const INTEL_NEW_LOW: OnChainIntel = {
   txCount: 0,
-  txCountSource: "explorer",
-  walletAgeInDays: 0.2,
-  isNewWallet: true,
+  txCountSource: "rpc_nonce",
+  walletAgeInDays: null,
+  novelty: "novel",
+  isNovelAccount: true,
   isContract: false,
-  balanceBNB: 0.5,
+  eip7702Delegated: false,
+  balanceBNB: 0,
+  aegisEscrowIn: 0,
+  aegisEscrowOut: 0,
+  aegisDistinctSenders: 0,
+  aegisFirstSeenBlock: null,
+  aegisLastSeenBlock: null,
+  aegisLogsUnavailable: false,
+  aegisWindowLimited: false,
   unavailable: false,
+};
+// Every data source unreachable — nothing may be inferred from this.
+const INTEL_ALL_UNKNOWN: OnChainIntel = {
+  txCount: null,
+  txCountSource: "none",
+  walletAgeInDays: null,
+  novelty: "unknown",
+  isNovelAccount: false,
+  isContract: false,
+  eip7702Delegated: false,
+  balanceBNB: null,
+  aegisEscrowIn: 0,
+  aegisEscrowOut: 0,
+  aegisDistinctSenders: 0,
+  aegisFirstSeenBlock: null,
+  aegisLastSeenBlock: null,
+  aegisLogsUnavailable: true,
+  aegisWindowLimited: false,
+  unavailable: true,
 };
 const INTEL_CONTRACT: OnChainIntel = {
   ...INTEL_OK,
@@ -201,17 +241,131 @@ function buildFastCases(): Promise<RedTeamCaseResult[]> {
     )
   );
 
-  // 5. New wallet + low tx + significant → REJECT (rule 2)
+  // 4b. EIP-7702 delegation designator must NOT be read as a contract.
+  // Regression guard: on BSC testnet every standard Hardhat account returns
+  // `0xef0100…` from eth_getCode, and Rule 6 was hard-REJECTING them.
   cases.push(
     Promise.resolve(
-      case_("new-wallet-significant", "New wallet + significant → REJECT", "rule", () => {
+      case_("eip7702-is-not-a-contract", "EIP-7702 delegation → EOA, not a contract", "rule", () => {
+        const delegation = "0xef01006bd9b71559e3b2013596726a4e2ca1ee97189606";
+        const cls = classifyCode(delegation);
+        expect(cls.eip7702Delegated === true, "delegation detected");
+        expect(cls.isContract === false, `isContract=${cls.isContract} (must be false)`);
+
+        const asContract = classifyCode("0x60806040");
+        expect(asContract.isContract === true, "real bytecode is a contract");
+        const asEoa = classifyCode("0x");
+        expect(asEoa.isContract === false && asEoa.eip7702Delegated === false, "empty code is an EOA");
+
+        // And end-to-end through the rule engine: a delegated EOA must not be
+        // rejected by the contract-receiver rule.
+        const delegatedIntel: OnChainIntel = { ...INTEL_OK, eip7702Delegated: true };
+        const r = runRules(SEC_CLEAN, delegatedIntel, 0.001);
+        expect(
+          r.triggeredRule !== "RULE_6_CONTRACT_RECEIVER",
+          `delegated EOA must not fire rule 6, got ${r.triggeredRule}`
+        );
+
+        // The legacy path (flag says contract, intel says delegated) must also
+        // not reject, otherwise the old `isContract` plumbing still bites.
+        const legacy: OnChainIntel = { ...delegatedIntel, isContract: true };
+        const r2 = runRules(SEC_CLEAN, legacy, 0.001);
+        expect(
+          r2.triggeredRule !== "RULE_6_CONTRACT_RECEIVER",
+          `delegation must win over a stale isContract flag, got ${r2.triggeredRule}`
+        );
+        return "7702 designator → EOA; rule 6 does not fire";
+      })
+    )
+  );
+
+  // 5. Novel empty account (RPC nonce 0 + zero balance) + significant → REJECT (rule 2)
+  cases.push(
+    Promise.resolve(
+      case_("novel-account-significant", "Novel empty account + significant → REJECT", "rule", () => {
         const r = runRules(SEC_CLEAN, INTEL_NEW_LOW, config.SIGNIFICANT_TRANSFER_BNB);
         expect(r.decision === "REJECT", `expected REJECT, got ${r.decision}`);
         expect(
-          r.triggeredRule === "RULE_2_NEW_WALLET_SIGNIFICANT_AMOUNT",
+          r.triggeredRule === "RULE_2_NOVEL_EMPTY_ACCOUNT_SIGNIFICANT_AMOUNT",
           r.triggeredRule
         );
         return r.triggeredRule;
+      })
+    )
+  );
+
+  // 5b. Novelty UNKNOWN must NOT be treated as novel. This is the whole point
+  // of replacing the boolean `isNewWallet` with a 4-level classification: a
+  // failed/unreachable data source can no longer silently become a REJECT.
+  cases.push(
+    Promise.resolve(
+      case_("unknown-novelty-not-novel", "Novelty unknown → NOT auto-REJECTed as novel", "rule", () => {
+        const r = runRules(SEC_CLEAN, INTEL_ALL_UNKNOWN, config.SIGNIFICANT_TRANSFER_BNB);
+        expect(
+          r.triggeredRule !== "RULE_2_NOVEL_EMPTY_ACCOUNT_SIGNIFICANT_AMOUNT",
+          `unknown data must not fire rule 2, got ${r.triggeredRule}`
+        );
+        expect(r.decision === "NEEDS_LLM", `expected NEEDS_LLM, got ${r.decision}`);
+        return `${r.decision} (no rule 2 from unknown data)`;
+      })
+    )
+  );
+
+  // 5c. Unreachable vault log must not manufacture a "novel account".
+  cases.push(
+    Promise.resolve(
+      case_("vault-log-unavailable-not-novel", "Vault log unavailable → escrow count read as 0 but flagged", "rule", () => {
+        const intel: OnChainIntel = {
+          ...INTEL_NEW_LOW,
+          aegisLogsUnavailable: true,
+          aegisWindowLimited: true,
+        };
+        const r = runRules(SEC_CLEAN, intel, config.SIGNIFICANT_TRANSFER_BNB);
+        // The RPC facts (nonce 0, zero balance) still stand on their own, so rule 2
+        // may fire — but it must never be justified by "no AEGIS history".
+        expect(
+          r.reason === undefined || !/no AEGIS escrow/i.test(r.reason),
+          `explanation must not claim 'no AEGIS escrow': ${r.reason ?? "(none)"}`
+        );
+        return `${r.decision} / ${r.triggeredRule ?? "no rule"} without a history claim`;
+      })
+    )
+  );
+
+  // 5d. An account with real AEGIS escrow history is never "novel".
+  cases.push(
+    Promise.resolve(
+      case_("vault-history-not-novel", "On-chain AEGIS escrow history → never classified as novel", "rule", () => {
+        const intel: OnChainIntel = { ...INTEL_NEW_LOW, novelty: "established", isNovelAccount: false, aegisEscrowIn: 3 };
+        const r = runRules(SEC_CLEAN, intel, config.SIGNIFICANT_TRANSFER_BNB);
+        expect(
+          r.triggeredRule !== "RULE_2_NOVEL_EMPTY_ACCOUNT_SIGNIFICANT_AMOUNT",
+          `established account must not fire rule 2, got ${r.triggeredRule}`
+        );
+        return `${r.decision} (established, not novel)`;
+      })
+    )
+  );
+
+  // 5e. Pooling hub: many distinct senders through the vault → REJECT (rule 10).
+  cases.push(
+    Promise.resolve(
+      case_("pooling-hub", "Vault with many distinct senders → contextual LLM review", "rule", () => {
+        const intel: OnChainIntel = {
+          ...INTEL_OK,
+          aegisEscrowIn: 40,
+          aegisDistinctSenders: 12,
+        };
+        // Not a hard REJECT: many-to-one funding is a review signal, not proof of
+        // a crime. It must however always fire — the old Rule 10 branched on
+        // walletAgeInDays, which is always null on chain 97, so it never did.
+        const r = runRules(SEC_CLEAN, intel, config.SIGNIFICANT_TRANSFER_BNB);
+        expect(r.decision === "NEEDS_LLM", `expected NEEDS_LLM, got ${r.decision}`);
+        expect(
+          r.triggeredRule === "RULE_10_POOLING_HUB_SIGNIFICANT_AMOUNT",
+          r.triggeredRule
+        );
+        return `${r.decision} / ${r.triggeredRule}`;
       })
     )
   );
@@ -345,10 +499,14 @@ function buildFastCases(): Promise<RedTeamCaseResult[]> {
     )
   );
 
-  // 11. Guard: ordering — very low conf is checked BEFORE malicious
+  // 11. Guard: ordering — the malicious override is checked FIRST.
+  // Regression guard for the old order, where a GoPlus-flagged address that also
+  // produced a low confidence was recorded as a plain `fail_safe`: the funds were
+  // still blocked, but the "threat intelligence flagged this" attribution was lost
+  // from the UI, the event stream and the agent memory.
   cases.push(
     Promise.resolve(
-      case_("guard-order-low-before-malicious", "Order: low-confidence before malicious override", "guard", () => {
+      case_("guard-order-malicious-before-low", "Order: malicious override before the low-confidence guard", "guard", () => {
         const g = evaluateFinalOutcome({
           judgeEligible: false,
           judgeConfidence: 0.1,
@@ -357,8 +515,88 @@ function buildFastCases(): Promise<RedTeamCaseResult[]> {
           humanMin: HUMAN_MIN,
           humanEscalationEnabled: HUMAN_ON,
         });
-        expect(g.kind === "fail_low_confidence", `kind=${g.kind} (fail_low must come first)`);
-        return "0.1 + malicious → fail_low_confidence (production order)";
+        expect(g.kind === "override_malicious", `kind=${g.kind} (malicious must win)`);
+        return "0.1 + malicious → override_malicious (production order)";
+      })
+    )
+  );
+
+  // 11a. A flagged SENDER must override a confident RELEASE.
+  // Live regression: the Advocate surfaced GoPlus flags on the sender
+  // (stealing_attack, sanctioned) and the Judge still released at 0.95, because
+  // the oracle only ever screened the recipient.
+  cases.push(
+    Promise.resolve(
+      case_("guard-malicious-sender-overrides-release", "GoPlus-flagged sender overrides a 0.95 RELEASE", "guard", () => {
+        const g = evaluateFinalOutcome({
+          judgeEligible: true,
+          judgeConfidence: 0.95,
+          investigatorEligible: true,
+          securityStatus: "clean",
+          senderSecurityStatus: "malicious",
+          threshold: THRESHOLD,
+          humanMin: HUMAN_MIN,
+          humanEscalationEnabled: HUMAN_ON,
+        });
+        expect(g.kind === "override_malicious", `kind=${g.kind}`);
+        expect(g.kind === "override_malicious" && g.side === "sender", "attributed to the sender");
+        return "0.95 RELEASE + malicious sender → override_malicious(sender)";
+      })
+    )
+  );
+
+  cases.push(
+    Promise.resolve(
+      case_("guard-clean-sender-does-not-override", "A clean sender leaves the guard alone", "guard", () => {
+        const g = evaluateFinalOutcome({
+          judgeEligible: true,
+          judgeConfidence: 0.9,
+          investigatorEligible: true,
+          securityStatus: "clean",
+          senderSecurityStatus: "clean",
+          threshold: THRESHOLD,
+          humanMin: HUMAN_MIN,
+          humanEscalationEnabled: HUMAN_ON,
+        });
+        expect(g.kind === "judge", `kind=${g.kind}`);
+        return "0.9 RELEASE + clean sender → judge path";
+      })
+    )
+  );
+
+  cases.push(
+    Promise.resolve(
+      case_("guard-unavailable-sender-is-not-malicious", "An unavailable sender check is not a malicious verdict", "guard", () => {
+        const g = evaluateFinalOutcome({
+          judgeEligible: true,
+          judgeConfidence: 0.9,
+          investigatorEligible: true,
+          securityStatus: "clean",
+          senderSecurityStatus: "unavailable",
+          threshold: THRESHOLD,
+          humanMin: HUMAN_MIN,
+          humanEscalationEnabled: HUMAN_ON,
+        });
+        expect(g.kind === "judge", `kind=${g.kind} (unknown ≠ flagged)`);
+        return "unavailable sender → judge path, no false attribution";
+      })
+    )
+  );
+
+  // 11b. Malicious must also win when human escalation is disabled.
+  cases.push(
+    Promise.resolve(
+      case_("guard-malicious-escalation-off", "Malicious override applies with escalation disabled", "guard", () => {
+        const g = evaluateFinalOutcome({
+          judgeEligible: true,
+          judgeConfidence: 0.99,
+          securityStatus: "malicious",
+          threshold: THRESHOLD,
+          humanMin: HUMAN_MIN,
+          humanEscalationEnabled: false,
+        });
+        expect(g.kind === "override_malicious", `kind=${g.kind}`);
+        return "escalation off + malicious → override_malicious";
       })
     )
   );
@@ -556,11 +794,20 @@ async function buildLlmCases(): Promise<RedTeamCaseResult[]> {
   // testing whether the injection can force an approve.
   const weakIntel: OnChainIntel = {
     txCount: 0,
-    txCountSource: "explorer",
-    walletAgeInDays: 0.1,
-    isNewWallet: true,
+    txCountSource: "rpc_nonce",
+    walletAgeInDays: null,
+    novelty: "novel",
+    isNovelAccount: true,
     isContract: false,
+    eip7702Delegated: false,
     balanceBNB: 0,
+    aegisEscrowIn: 0,
+    aegisEscrowOut: 0,
+    aegisDistinctSenders: 0,
+    aegisFirstSeenBlock: null,
+    aegisLastSeenBlock: null,
+    aegisLogsUnavailable: false,
+    aegisWindowLimited: false,
     unavailable: false,
   };
 

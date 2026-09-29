@@ -1,42 +1,33 @@
 import { config } from "./config.js";
 
-// ── DEMO/TESTING SIMULATION ────────────────────────────────────────────────────
+// ── Optional demo simulation (OFF by default, no built-in fake addresses) ─────
 /**
- * FOR HACKATHON DEMO PURPOSES ONLY.
+ * FOR HACKATHON DEMO PURPOSES ONLY — and OFF by default.
  *
- * GoPlus builds its threat intelligence from real-world mainnet activity.
- * Freshly generated testnet addresses (e.g. from `cast wallet new`) will
- * NEVER appear in GoPlus's database - there's no malicious history to detect.
+ * GoPlus builds its threat intelligence from real-world activity. A freshly
+ * generated testnet address has no history to detect, so a demo may want to
+ * show the rejection path without hunting for a real malicious address.
  *
- * This simulation set lets us DEMONSTRATE the GoPlus security layer working
- * end-to-end during a live demo, without needing to find/use a real
- * known-malicious mainnet address (which would be risky and unreliable).
+ * This module therefore NEVER invents a "malicious" verdict on its own:
+ *   - there is no built-in list of fake addresses;
+ *   - the list must be supplied explicitly via GOPLUS_SIMULATED_ADDRESSES;
+ *   - every hit is tagged `simulated: true` and logged with a loud warning.
  *
- * In production: set GOPLUS_SIMULATE=false (or delete this block) — GoPlus
- * will query its real database exclusively.
- *
- * Adding demo addresses WITHOUT editing code:
- *   GOPLUS_SIMULATE=true
- *   GOPLUS_SIMULATED_ADDRESSES=0xaaa...,0xbbb...,0xccc...
+ * With simulation OFF (the default, and the only sane production setting) the
+ * verdict comes exclusively from GoPlus' own response.
  */
-const DEFAULT_DEMO_MALICIOUS_ADDRESSES = [
-  // Built-in demo addresses — safe to use during a pitch/demo.
-  "0x101206f123f724438f5ae6009790217d38528328",
-  "0x7661a11547ee70053a4d41114da72c4336c5a1db",
-  "0xaccb46d356055da62693ba24f644ae15abb957c7",
-  "0x87736ef227ac48ee2517e5cdab8d904d261ba173",
-  "0xc64462ef463d97964a2156e972716f25d301b0f9",
-];
-
 const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 
-/** GoPlus chain ID queried for address reputation: 56 = BSC Mainnet. */
-const GOPLUS_CHAIN_ID = "56";
+/**
+ * Chains queried for address reputation. Configurable via GOPLUS_CHAIN_IDS,
+ * default "56,97": the escrow lives on BSC Testnet (97) while GoPlus' threat
+ * intelligence is built on BSC Mainnet (56). Querying only one of them leaves
+ * the signal almost empty; querying both and merging is strictly better.
+ */
+const GOPLUS_CHAIN_IDS = config.GOPLUS_CHAIN_IDS;
 
 function buildSimulatedMaliciousSet(): Set<string> {
-  const set = new Set<string>(
-    DEFAULT_DEMO_MALICIOUS_ADDRESSES.map((a) => a.toLowerCase())
-  );
+  const set = new Set<string>();
 
   const fromEnv = config.GOPLUS_SIMULATED_ADDRESSES.split(",");
   for (const raw of fromEnv) {
@@ -56,17 +47,32 @@ function buildSimulatedMaliciousSet(): Set<string> {
 
 const SIMULATED_MALICIOUS_ADDRESSES = buildSimulatedMaliciousSet();
 
+// Fail fast on a contradictory configuration: simulation ON with an empty list
+// means the author expects simulated hits that can never fire.
+if (config.GOPLUS_SIMULATE && SIMULATED_MALICIOUS_ADDRESSES.size === 0) {
+  console.warn(
+    "[GoPlus] ⚠️  GOPLUS_SIMULATE=true but GOPLUS_SIMULATED_ADDRESSES is empty — " +
+      "no simulation will occur. Set the addresses explicitly or set GOPLUS_SIMULATE=false."
+  );
+}
+
 function checkSimulatedMalicious(address: string): SecurityCheckResult | null {
   if (!config.GOPLUS_SIMULATE) return null;
-  if (SIMULATED_MALICIOUS_ADDRESSES.has(address.toLowerCase())) {
-    return {
-      status: "malicious",
-      riskFlags: ["phishing_activities", "blacklist_doubt"],
-      source: "goplus",
-      rawData: { _simulated: true, _note: "Demo simulation - not a real GoPlus response" },
-    };
-  }
-  return null;
+  if (!SIMULATED_MALICIOUS_ADDRESSES.has(address.toLowerCase())) return null;
+  console.warn(
+    `[GoPlus] ⚠️⚠️  SIMULATED malicious verdict for ${address} — this is NOT a real GoPlus detection.`
+  );
+  return {
+    status: "malicious",
+    riskFlags: ["simulated_demo_flag"],
+    source: "goplus",
+    simulated: true,
+    rawData: {
+      _simulated: true,
+      _note:
+        "Demo simulation - not a real GoPlus response. Set GOPLUS_SIMULATE=false to disable.",
+    },
+  };
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -82,6 +88,17 @@ export interface SecurityCheckResult {
   riskFlags: string[];
   source: "goplus" | "unavailable";
   rawData?: Record<string, unknown>;
+  /**
+   * True when the verdict came from the demo simulation, NOT from GoPlus.
+   * Propagated so the transcript/DB can label simulated data as simulated.
+   */
+  simulated?: boolean;
+  /** Chain(s) that reported the flags (e.g. ["56"]). */
+  flaggedChains?: string[] | undefined;
+  /** Chain(s) that answered successfully, regardless of the verdict. */
+  queriedChains?: string[] | undefined;
+  /** Chain(s) that could not be reached. Non-empty ⇒ partial coverage. */
+  failedChains?: string[] | undefined;
 }
 
 // ── GoPlus response shape (partial) ──────────────────────────────────────────
@@ -104,6 +121,10 @@ interface GoPlusAddressResult {
   money_laundering?: string | number;
   fake_kyc?: string | number;
   malicious_mining_activities?: string | number;
+  // Observed in live BSC responses — genuine threat indicators.
+  number_of_malicious_contracts_created?: string | number;
+  reinit?: string | number;
+  fake_standard_interface?: string | number;
   data_source?: string;
   [key: string]: unknown;
 }
@@ -136,6 +157,11 @@ const MALICIOUS_FLAGS: (keyof GoPlusAddressResult)[] = [
   "money_laundering",
   "fake_kyc",
   "malicious_mining_activities",
+  // Live-verified fields: an address credited with deploying malicious
+  // contracts, or with a reinit/clone of a known interface, is not clean.
+  "number_of_malicious_contracts_created",
+  "reinit",
+  "fake_standard_interface",
 ];
 
 /**
@@ -158,26 +184,16 @@ function extractRiskFlags(result: GoPlusAddressResult): string[] {
   return flags;
 }
 
-// ── Main function ─────────────────────────────────────────────────────────────
+// ── Per-chain query ───────────────────────────────────────────────────────────
 /**
- * Query GoPlus security intelligence for a given EVM address.
- *
- * Chain ID 56 = BSC Mainnet.
- * GoPlus address security uses mainnet data for address reputation.
- * Testnet-only addresses may return empty results (treated as "clean").
- *
- * @param address  EVM address (0x...)
+ * Query GoPlus for ONE chain.
+ * Resolves to { flags, raw } on success, or null when the chain is unreachable
+ * (timeout / HTTP error / malformed body / API error). Never throws.
  */
-export async function checkAddressSecurity(
-  address: string
-): Promise<SecurityCheckResult> {
-  // ── Check demo simulation first (see note above) ──────────────────────────
-  const simulated = checkSimulatedMalicious(address);
-  if (simulated) {
-    console.log(`[GoPlus] ⚠️  DEMO SIMULATION triggered for ${address} (not a real GoPlus lookup)`);
-    return simulated;
-  }
-
+async function queryChain(
+  address: string,
+  chainId: string
+): Promise<{ flags: string[]; raw: GoPlusAddressResult } | null> {
   const controller = new AbortController();
   const timer = setTimeout(
     () => controller.abort("GoPlus request timeout"),
@@ -187,11 +203,9 @@ export async function checkAddressSecurity(
   const url = new URL(
     `${config.GOPLUS_API_URL}/address_security/${address.toLowerCase()}`
   );
-  url.searchParams.set("chain_id", GOPLUS_CHAIN_ID);
+  url.searchParams.set("chain_id", chainId);
 
-  const headers: Record<string, string> = {
-    Accept: "application/json",
-  };
+  const headers: Record<string, string> = { Accept: "application/json" };
   if (config.GOPLUS_API_KEY) {
     headers["Authorization"] = config.GOPLUS_API_KEY;
   }
@@ -203,41 +217,32 @@ export async function checkAddressSecurity(
       signal: controller.signal,
     });
 
-    clearTimeout(timer);
-
-    // ── HTTP error ────────────────────────────────────────────────────────────
     if (!response.ok) {
       console.warn(
-        `[GoPlus] HTTP ${response.status} ${response.statusText} for ${address}`
+        `[GoPlus] chain=${chainId} HTTP ${response.status} ${response.statusText} for ${address}`
       );
-      return unavailable();
+      return null;
     }
 
-    // ── Parse JSON ────────────────────────────────────────────────────────────
     let data: GoPlusResponse;
     try {
       data = (await response.json()) as GoPlusResponse;
     } catch {
-      console.warn(`[GoPlus] Malformed JSON response for ${address}`);
-      return unavailable();
+      console.warn(`[GoPlus] chain=${chainId} malformed JSON for ${address}`);
+      return null;
     }
 
-    // ── API-level error ───────────────────────────────────────────────────────
     if (data.code !== 1) {
       console.warn(
-        `[GoPlus] API error code=${data.code} message="${data.message}" for ${address}`
+        `[GoPlus] chain=${chainId} API error code=${data.code} message="${data.message}" for ${address}`
       );
-      return unavailable();
+      return null;
     }
 
-    // ── Missing result ────────────────────────────────────────────────────────
     if (!data.result) {
-      console.warn(`[GoPlus] Missing result field for ${address}`);
-      return unavailable();
+      console.warn(`[GoPlus] chain=${chainId} missing result for ${address}`);
+      return null;
     }
-
-    const addrKey = address.toLowerCase();
-    const resultKeys = Object.keys(data.result);
 
     // ── Detect response format ────────────────────────────────────────────────
     // GoPlus /address_security/ returns flags FLAT directly in `result`:
@@ -247,39 +252,120 @@ export async function checkAddressSecurity(
     //   result = { 0xabc...: { blacklist_doubt: 1, ... } }
     //
     // Detect flat format: if the first key is a known flag name, result IS the addrResult.
-    const isFlat =
-      resultKeys.length > 0 && KNOWN_FLAG_KEYS.has(resultKeys[0]!);
+    const addrKey = address.toLowerCase();
+    const resultKeys = Object.keys(data.result);
+    const isFlat = resultKeys.length > 0 && KNOWN_FLAG_KEYS.has(resultKeys[0]!);
 
     const addrResult: GoPlusAddressResult = isFlat
       ? (data.result as unknown as GoPlusAddressResult)    // flat format ✓
-      : (data.result[addrKey] ??                            // nested by address
-        (resultKeys.length > 0 ? data.result[resultKeys[0]!]! : {}));
+      : ((data.result[addrKey] ??
+          (resultKeys.length > 0 ? data.result[resultKeys[0]!]! : {})) as GoPlusAddressResult);
 
-    // ── Extract flags ─────────────────────────────────────────────────────────
-    const riskFlags = extractRiskFlags(addrResult);
-    const isMalicious = riskFlags.length > 0;
-
-    return {
-      status: isMalicious ? "malicious" : "clean",
-      riskFlags,
-      source: "goplus",
-      rawData: addrResult as Record<string, unknown>,
-    };
+    return { flags: extractRiskFlags(addrResult), raw: addrResult };
   } catch (err: unknown) {
-    clearTimeout(timer);
-
-    const isAbort =
-      err instanceof Error && err.name === "AbortError";
+    const isAbort = err instanceof Error && err.name === "AbortError";
     const isTimeout = typeof err === "string" && err.includes("timeout");
-
     if (isAbort || isTimeout) {
-      console.warn(`[GoPlus] Timeout after ${config.GOPLUS_TIMEOUT_MS}ms for ${address}`);
+      console.warn(
+        `[GoPlus] chain=${chainId} timeout after ${config.GOPLUS_TIMEOUT_MS}ms for ${address}`
+      );
     } else {
-      console.warn(`[GoPlus] Network error for ${address}:`, err);
+      console.warn(`[GoPlus] chain=${chainId} network error for ${address}:`, err);
     }
-
-    return unavailable();
+    return null;
+  } finally {
+    clearTimeout(timer);
   }
+}
+
+// ── Main function ─────────────────────────────────────────────────────────────
+/**
+ * Query GoPlus security intelligence for a given EVM address.
+ *
+ * Every chain in GOPLUS_CHAIN_IDS is queried in parallel and the verdicts are
+ * MERGED: the address is malicious when at least one chain reports a flag.
+ *
+ * Coverage semantics — the crucial distinction:
+ *   - every chain answered CLEAN  → "clean"        (GoPlus knows this address, no flags)
+ *   - some chain failed           → "clean" + failedChains (PARTIAL coverage; the
+ *     pipeline and the LLM are told which chains are missing, so a partial answer
+ *     is never presented as a full clean bill of health)
+ *   - every chain failed          → "unavailable"  (NOT clean)
+ *
+ * @param address  EVM address (0x...)
+ */
+export async function checkAddressSecurity(
+  address: string
+): Promise<SecurityCheckResult> {
+  // ── Check demo simulation first (see note above) ──────────────────────────
+  const simulated = checkSimulatedMalicious(address);
+  if (simulated) {
+    return simulated;
+  }
+
+  const chains = GOPLUS_CHAIN_IDS.length > 0 ? GOPLUS_CHAIN_IDS : ["56"];
+
+  const perChain = await Promise.all(
+    chains.map(async (chainId) => ({
+      chainId,
+      res: await queryChain(address, chainId),
+    }))
+  );
+
+  const queriedChains: string[] = [];
+  const failedChains: string[] = [];
+  const flaggedChains: string[] = [];
+  const merged = new Set<string>();
+  /**
+   * Flat merge of every flag field seen on any chain, so downstream rawData
+   * inspection (rule engine Rule 8) keeps working across a multi-chain lookup.
+   * `_byChain` keeps the per-chain breakdown for auditing.
+   */
+  const mergedRaw: Record<string, unknown> = {};
+  const rawByChain: Record<string, Record<string, unknown>> = {};
+
+  for (const { chainId, res } of perChain) {
+    if (res === null) {
+      failedChains.push(chainId);
+      continue;
+    }
+    queriedChains.push(chainId);
+    rawByChain[chainId] = res.raw as Record<string, unknown>;
+    for (const [k, v] of Object.entries(res.raw)) {
+      if (isFlagSet(v)) mergedRaw[k] = v;
+    }
+    if (res.flags.length > 0) {
+      flaggedChains.push(chainId);
+      res.flags.forEach((f) => merged.add(f));
+    }
+  }
+
+  if (queriedChains.length === 0) {
+    console.warn(
+      `[GoPlus] All chains failed (${failedChains.join(", ")}) for ${address} — unavailable.`
+    );
+    return { ...unavailable(), failedChains };
+  }
+
+  const riskFlags = Array.from(merged);
+  mergedRaw._byChain = rawByChain;
+
+  if (failedChains.length > 0) {
+    console.warn(
+      `[GoPlus] PARTIAL coverage for ${address}: chain(s) ${failedChains.join(", ")} unreachable, ` +
+        `${queriedChains.join(", ")} answered. Treating as ${riskFlags.length > 0 ? "malicious" : "clean (partial)"}.`
+    );
+  }
+
+  return {
+    status: riskFlags.length > 0 ? "malicious" : "clean",
+    riskFlags,
+    source: "goplus",
+    rawData: mergedRaw,
+    flaggedChains: flaggedChains.length > 0 ? flaggedChains : undefined,
+    queriedChains,
+    failedChains: failedChains.length > 0 ? failedChains : undefined,
+  };
 }
 
 function unavailable(): SecurityCheckResult {

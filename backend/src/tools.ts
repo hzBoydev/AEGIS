@@ -1,5 +1,11 @@
-import { checkAddressSecurity } from "./goplusChecker.js";
-import { getOnChainIntel, getRecentTransactions } from "./bscscanChecker.js";
+import { checkAddressSecurity, type SecurityCheckResult } from "./goplusChecker.js";
+import {
+  describeNovelty,
+  getOnChainIntel,
+  getRecentTransactions,
+  unknownIntel,
+  type OnChainIntel,
+} from "./bscscanChecker.js";
 import {
   getSenderEscrowHistory,
   getRecipientEscrowHistory,
@@ -107,29 +113,35 @@ async function runSenderProfile(ctx: ToolContext): Promise<ToolOutcome> {
           intel.txCountSource === "rpc_nonce"
             ? "RPC nonce = OUTGOING transactions ONLY; incoming transactions are not counted. NOT the on-chain transaction total."
             : undefined,
-        walletAgeDays:
-          intel.walletAgeInDays !== null
-            ? Number(intel.walletAgeInDays.toFixed(1))
-            : null,
-        walletAgeNote:
-          intel.walletAgeInDays === null
-            ? "Wallet age is UNKNOWN: it needs an indexed transaction history, and the BSC testnet explorer is not available. UNKNOWN is not 'new wallet'."
-            : undefined,
+        accountProfile: describeNovelty(intel.novelty),
+        novelty: intel.novelty,
         balanceBNB:
           intel.balanceBNB !== null
             ? Number(intel.balanceBNB.toFixed(6))
             : null,
-        isNewWallet: intel.isNewWallet,
         isContract: intel.isContract,
+        eip7702Delegated: intel.eip7702Delegated,
+        aegisVaultHistory: {
+          escrowIn: intel.aegisEscrowIn,
+          escrowOut: intel.aegisEscrowOut,
+          distinctSenders: intel.aegisDistinctSenders,
+          note:
+            "Read directly from the AegisVault event log on-chain. Scope: only transfers routed through AEGIS.",
+          unavailable: intel.aegisLogsUnavailable,
+          windowLimited: intel.aegisWindowLimited,
+        },
         unavailable: intel.unavailable,
       },
       goplus: {
         status: security.status,
         flags: security.riskFlags,
+        simulated: security.simulated === true,
         note:
           security.status === "unavailable"
             ? "GoPlus is unavailable — treat as UNKNOWN, not safe."
-            : undefined,
+            : security.failedChains && security.failedChains.length > 0
+              ? `PARTIAL COVERAGE: chain(s) ${security.failedChains.join(", ")} unreachable — not a full clean bill of health.`
+              : undefined,
       },
     }),
   };
@@ -218,6 +230,121 @@ async function runSingleTool(name: string, ctx: ToolContext): Promise<ToolOutcom
       return runRecipientDbHistory(ctx);
     default:
       throw new Error(`Unknown tool: ${name}`);
+  }
+}
+
+/**
+ * The Advocate's own evidence, plus the structured sender result the pipeline
+ * needs for its deterministic sender check.
+ *
+ * `senderSecurity` is returned separately (not just rendered into `context`)
+ * because "is the sender flagged" must not depend on what the LLM did with the
+ * text: it drives the final guard.
+ */
+export interface AdvocateEvidence {
+  /** JSON block to inject into the Advocate/Judge prompts. */
+  context: string;
+  /** GoPlus result for the SENDER — the pipeline's deterministic input. */
+  senderSecurity: SecurityCheckResult;
+  /** Sender on-chain intel, already fetched — reused to avoid a second scan. */
+  senderIntel: OnChainIntel;
+}
+
+/**
+ * Evidence the Advocate gathers for ITSELF, before it argues.
+ *
+ * The Advocate used to run with strictly less information than the Investigator:
+ * it saw the recipient's evidence but never the sender's. In a hearing whose
+ * whole purpose is to stress-test a RELEASE decision, that means the argument
+ * against releasing is built blind — it either repeats the Investigator's own
+ * facts or invents something.
+ *
+ * So the pipeline pre-fetches the sender side in code (no extra LLM call, no
+ * model-chosen tool call) and hands it to the Advocate. Deterministic, cheap and
+ * it makes the adversarial round a real one.
+ */
+export async function buildAdvocateEvidence(
+  ctx: ToolContext
+): Promise<AdvocateEvidence> {
+  try {
+    const [senderIntel, senderSecurity, senderHistory, recipientHistory] =
+      await Promise.all([
+        getOnChainIntel(ctx.sender),
+        checkAddressSecurity(ctx.sender),
+        Promise.resolve(getSenderEscrowHistory(ctx.sender)),
+        Promise.resolve(getRecipientEscrowHistory(ctx.recipient)),
+      ]);
+
+    return {
+      senderSecurity,
+      senderIntel,
+      context: JSON.stringify({
+      note:
+        "SIDE EVIDENCE COLLECTED BY THE ADVOCATE (not supplied by the Investigator). " +
+        "Use it to stress-test the position you are defending. " +
+        "A sender that GoPlus flags as malicious is a laundering pattern: a blocked " +
+        "party routing funds through the escrow to reach the recipient.",
+      sender: {
+        address: ctx.sender,
+        accountProfile: describeNovelty(senderIntel.novelty),
+        txCount: senderIntel.txCount,
+        txCountSource: senderIntel.txCountSource,
+        balanceBNB:
+          senderIntel.balanceBNB !== null
+            ? Number(senderIntel.balanceBNB.toFixed(6))
+            : null,
+        isContract: senderIntel.isContract,
+        eip7702Delegated: senderIntel.eip7702Delegated,
+        goplus: {
+          status: senderSecurity.status,
+          flags: senderSecurity.riskFlags,
+          simulated: senderSecurity.simulated === true,
+          failedChains: senderSecurity.failedChains,
+          note:
+            senderSecurity.status === "malicious"
+              ? "THE SENDER ITSELF IS FLAGGED. This is decisive, not a matter of opinion."
+              : undefined,
+        },
+        aegisEscrowsViaVault: {
+          in: senderIntel.aegisEscrowIn,
+          out: senderIntel.aegisEscrowOut,
+          unavailable: senderIntel.aegisLogsUnavailable,
+        },
+      },
+      aegisDatabaseHistory: {
+        note: "AEGIS internal DB — NOT on-chain data.",
+        senderSide: {
+          total: senderHistory.total,
+          approved: senderHistory.approved,
+          rejected: senderHistory.rejected,
+          distinctRecipients: senderHistory.otherRecipients.length,
+        },
+        recipientSide: {
+          total: recipientHistory.total,
+          approved: recipientHistory.approved,
+          rejected: recipientHistory.rejected,
+          distinctSenders: recipientHistory.distinctSenders,
+        },
+      },
+    }),
+    };
+  } catch (err) {
+    // Never let side-evidence collection break the hearing.
+    console.warn(
+      `[Advocate] Side evidence unavailable (${err instanceof Error ? err.message : err}).`
+    );
+    return {
+      senderSecurity: {
+        status: "unavailable",
+        riskFlags: [],
+        source: "unavailable",
+      },
+      senderIntel: unknownIntel(),
+      context: JSON.stringify({
+        status: "unavailable",
+        note: "The Advocate's own side evidence could not be collected. Treat it as UNKNOWN and say so in your argument.",
+      }),
+    };
   }
 }
 

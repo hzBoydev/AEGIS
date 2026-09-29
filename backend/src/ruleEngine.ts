@@ -16,45 +16,37 @@ export interface HardRuleResult {
   triggeredRule: string;
 }
 
-/**
- * Description of the transaction count that is HONEST about its source.
- * The RPC nonce only counts outgoing transactions — describing it as
- * "N on-chain transactions" is misleading for receive-only accounts.
- */
-function describeActivity(intel: OnChainIntel, txCount: number): string {
-  if (intel.txCount === null) return "transaction count unknown";
-  if (intel.txCountSource === "rpc_nonce") {
-    return `${txCount} outgoing transactions (nonce; incoming transactions not counted)`;
-  }
-  return `${txCount} transactions (explorer)`;
-}
-
 // ── Rule Engine ───────────────────────────────────────────────────────────────
 /**
  * Deterministic, explainable rule engine.
  * Purpose: handle clearly malicious cases WITHOUT calling LLM,
  * and act as an independent security guardrail that LLM cannot override.
  *
+ * Every branch below runs on a field that is actually populated on BSC Testnet.
+ * There is NO branch on `walletAgeInDays`: that field needs an indexer, the
+ * BSC testnet explorer is deprecated, and a previous version of this engine
+ * silently substituted the outgoing nonce for it — which mislabelled ordinary
+ * receive-only wallets as brand new and hard-rejected them.
+ *
  * Priority (high -> low):
  *   Rule 1:   GoPlus malicious signal + flags          -> REJECT
  *   Rule 1b:  GoPlus malicious (no flags)              -> REJECT
- *   Rule 2:   New wallet + low-tx + sig. amount        -> REJECT
- *   Rule 3:   New wallet + low-tx (small amount)       -> NEEDS_LLM
- *   Rule 4:   GoPlus unavailable                       -> NEEDS_LLM
- *   Rule 5:   BscScan unavailable                      -> NEEDS_LLM
+ *   Rule 8:   GoPlus explicit phishing/drainer labels  -> REJECT
  *   Rule 6:   Smart contract receiver                  -> REJECT
- *   Rule 7:   Zero-balance wallet + significant amount -> REJECT
- *   Rule 8:   GoPlus explicit phishing/drainer flags   -> REJECT
- *   Rule 9:   Very large transfer (any wallet)         -> NEEDS_LLM
- *   Rule 10:  Medium-age wallet + low-activity + sig.  -> NEEDS_LLM
- *   Default:  All other cases                          -> NEEDS_LLM
+ *   Rule 2:   Brand-new empty account + significant amt -> REJECT
+ *   Rule 7:   Zero-balance wallet + significant amount  -> REJECT
+ *   Rule 3:   Brand-new account, small amount           -> NEEDS_LLM
+ *   Rule 4:   GoPlus unavailable                        -> NEEDS_LLM
+ *   Rule 5:   All on-chain intel unavailable            -> NEEDS_LLM
+ *   Rule 9:   Very large transfer (any wallet)          -> NEEDS_LLM
+ *   Rule 10:  Pooling hub (many on-chain senders) + significant amount -> NEEDS_LLM
+ *   Default:  All other cases                           -> NEEDS_LLM
  */
 export function runRules(
   security: SecurityCheckResult,
   intel: OnChainIntel,
   amountBNB: number
 ): HardRuleResult {
-
   // ── Rule 1: GoPlus hard malicious signal ─────────────────────────────────
   // This rule is the PRIMARY hard rule. It can never be overridden by LLM.
   if (security.status === "malicious" && security.riskFlags.length > 0) {
@@ -75,22 +67,32 @@ export function runRules(
     };
   }
 
-  // ── Rule 8: GoPlus explicit phishing / drainer flags (from rawData) ───────
-  // Checked BEFORE on-chain rules so explicit GoPlus labels are always caught.
-  // rawData fields: phishing_activities, honeypot_related_address,
-  //                 stealing_attack, fake_token_attack.
+  // ── Rule 8: GoPlus explicit phishing / drainer labels (from rawData) ───────
+  // Defence in depth: Rule 1 already rejects on any extracted flag, so this rule
+  // only adds value if a label is present in rawData but was NOT in MALICIOUS_FLAGS.
+  // It therefore reports the label it actually found instead of re-listing the
+  // generic flag set.
+  //
+  // Field names below are the real GoPlus keys (verified against live responses);
+  // the previous `fake_token_attack` key does not exist in the GoPlus schema.
   if (security.rawData) {
     const raw = security.rawData as Record<string, unknown>;
-    const phishingFlags: string[] = [];
-    if (raw["phishing_activities"] === "1") phishingFlags.push("phishing_activities");
-    if (raw["honeypot_related_address"] === "1") phishingFlags.push("honeypot_related_address");
-    if (raw["stealing_attack"] === "1") phishingFlags.push("stealing_attack");
-    if (raw["fake_token_attack"] === "1") phishingFlags.push("fake_token_attack");
+    const phishingLabels: string[] = [];
+    for (const label of [
+      "phishing_activities",
+      "honeypot_related_address",
+      "stealing_attack",
+      "fake_token",
+      "number_of_malicious_contracts_created",
+      "reinit",
+    ]) {
+      if (raw[label] === "1" || raw[label] === 1) phishingLabels.push(label);
+    }
 
-    if (phishingFlags.length > 0) {
+    if (phishingLabels.length > 0) {
       return {
         decision: "REJECT",
-        reason: `This address carries explicit malicious activity labels from GoPlus: ${phishingFlags.join(", ")}. The transfer is cancelled.`,
+        reason: `This address carries explicit malicious activity labels from GoPlus: ${phishingLabels.join(", ")}. The transfer is cancelled.`,
         triggeredRule: "RULE_8_GOPLUS_PHISHING_FLAGS",
       };
     }
@@ -99,7 +101,12 @@ export function runRules(
   // ── Rule 6: Smart contract receiver ──────────────────────────────────────
   // Sending BNB directly to a contract address is extremely rare for a normal
   // use case. It could be a honeypot contract, a drainer, or a scam contract.
-  if (intel.isContract) {
+  //
+  // An EIP-7702 delegation is NOT a contract: it is an EOA that points its code
+  // at a delegate contract (see classifyCode). Without that carve-out this rule
+  // hard-REJECTED ordinary wallets — on BSC testnet every standard Hardhat
+  // account reports a delegation designator.
+  if (intel.isContract && !intel.eip7702Delegated) {
     return {
       decision: "REJECT",
       reason:
@@ -110,11 +117,57 @@ export function runRules(
     };
   }
 
-  // ── Rule 7: Zero-balance wallet + significant amount → REJECT ─────────────
-  // A wallet with a 0 BNB balance that directly receives a significant transfer
-  // is an indicator of a wallet created specifically for fraud/scam.
-  // Unlike Rule 2 (which focuses on age); Rule 7 focuses on a zero balance.
   const isSignificantAmount = amountBNB >= config.SIGNIFICANT_TRANSFER_BNB;
+
+  // ── Rule 2: Brand-new empty account + significant transfer → REJECT ────────
+  // Rebuilt on REAL data. The previous version branched on `isNewWallet`, which
+  // was derived from the outgoing nonce (`nonce === 0`) because the explorer that
+  // supplies real wallet age is dead on chain 97. That mislabelled every
+  // receive-only wallet as brand new and hard-rejected ordinary users.
+  //
+  // The new condition requires all three facts to be positively observed:
+  //   - the account has never SENT a transaction (nonce 0, a real RPC fact),
+  //   - it holds zero BNB (real RPC fact),
+  //   - it has never appeared in the AEGIS vault (real eth_getLogs result).
+  // Any "unknown" degrades to the LLM instead of a hard REJECT.
+  const txCount = intel.txCount;
+  const isNovel = intel.isNovelAccount;
+
+  if (isNovel && isSignificantAmount) {
+    return {
+      decision: "REJECT",
+      reason: [
+        `The destination account shows no history on any available source:`,
+        `it has never sent an outgoing transaction (nonce 0),`,
+        `its balance is 0 BNB, and it has never appeared in the AEGIS vault on-chain`,
+        `(0 escrows found in the contract's event log).`,
+        `It is about to receive ${amountBNB} BNB (threshold: >= ${config.SIGNIFICANT_TRANSFER_BNB} BNB).`,
+        `Funding a completely fresh, empty account with a significant amount is`,
+        `the signature of a throwaway wallet prepared to collect and disappear.`,
+      ].join(" "),
+      triggeredRule: "RULE_2_NOVEL_EMPTY_ACCOUNT_SIGNIFICANT_AMOUNT",
+    };
+  }
+
+  // ── Rule 3: Brand-new account with a SMALL amount → LLM ───────────────────
+  // Not a REJECT: the amount is small, so the LLM weighs the context.
+  if (isNovel) {
+    return {
+      decision: "NEEDS_LLM",
+      reason: [
+        `The destination account is brand new: never sent an outgoing transaction`,
+        `(nonce 0), balance 0 BNB, no AEGIS vault history.`,
+        `The transfer amount is below the significant threshold (${amountBNB} BNB < ${config.SIGNIFICANT_TRANSFER_BNB} BNB).`,
+        `Forwarded to the LLM for contextual assessment.`,
+      ].join(" "),
+      triggeredRule: "RULE_3_NOVEL_ACCOUNT_SMALL_AMOUNT",
+    };
+  }
+
+  // ── Rule 7: Zero-balance wallet + significant amount → REJECT ─────────────
+  // A wallet that holds nothing and is about to receive a significant transfer
+  // is a strong collection-wallet signal. (Rule 2 above already covers the
+  // strictly stronger case where such a wallet is also brand new.)
   if (intel.balanceBNB !== null && intel.balanceBNB === 0 && isSignificantAmount) {
     return {
       decision: "REJECT",
@@ -123,48 +176,9 @@ export function runRules(
         `and is about to receive a transfer of ${amountBNB} BNB`,
         `(significant threshold: >= ${config.SIGNIFICANT_TRANSFER_BNB} BNB).`,
         `An empty wallet directly receiving a large transfer is a`,
-        `strong indicator of a new wallet prepared for fraud.`,
+        `strong indicator of a collection wallet prepared for fraud.`,
       ].join(" "),
       triggeredRule: "RULE_7_ZERO_BALANCE_SIGNIFICANT_AMOUNT",
-    };
-  }
-
-  // ── Rule 2: New wallet + very low activity + significant transfer → REJECT ─
-  // Rationale: combination of all three factors indicates high-risk scenario.
-  // No single factor alone is sufficient.
-  // Thresholds are configurable MVP parameters (see .env.example).
-  const isNewWallet = intel.isNewWallet;
-  const txCount = intel.txCount ?? 0;
-  const isLowActivity = txCount <= config.LOW_TX_COUNT_THRESHOLD;
-
-  if (isNewWallet && isLowActivity && isSignificantAmount) {
-    return {
-      decision: "REJECT",
-      reason: [
-        `Very new wallet (age: ${formatAge(intel.walletAgeInDays)},`,
-        `threshold: < ${config.NEW_WALLET_DAYS} days),`,
-        `very low recorded activity (${describeActivity(intel, txCount)},`,
-        `threshold: <= ${config.LOW_TX_COUNT_THRESHOLD}),`,
-        `receiving a fairly large transfer of ${amountBNB} BNB`,
-        `(threshold: >= ${config.SIGNIFICANT_TRANSFER_BNB} BNB).`,
-        `This combination indicates a high-risk profile.`,
-      ].join(" "),
-      triggeredRule: "RULE_2_NEW_WALLET_SIGNIFICANT_AMOUNT",
-    };
-  }
-
-  // ── Rule 3: New wallet + low activity, but small amount → escalate to LLM ─
-  // We don't REJECT because amount is small, but still needs LLM reasoning.
-  if (isNewWallet && isLowActivity) {
-    return {
-      decision: "NEEDS_LLM",
-      reason: [
-        `New wallet (age: ${formatAge(intel.walletAgeInDays)})`,
-        `with low recorded activity (${describeActivity(intel, txCount)}).`,
-        `The transfer amount is below the significant threshold (${amountBNB} BNB < ${config.SIGNIFICANT_TRANSFER_BNB} BNB).`,
-        `Forwarded to the LLM for contextual assessment.`,
-      ].join(" "),
-      triggeredRule: "RULE_3_NEW_WALLET_SMALL_AMOUNT",
     };
   }
 
@@ -180,14 +194,14 @@ export function runRules(
     };
   }
 
-  // ── Rule 5: BscScan fully unavailable ────────────────────────────────────
+  // ── Rule 5: all on-chain intel unavailable ────────────────────────────────
   if (intel.unavailable) {
     return {
       decision: "NEEDS_LLM",
       reason:
-        "The BscScan on-chain service is currently unavailable. " +
+        "The on-chain data sources are currently unavailable. " +
         "The on-chain data could not be verified. Forwarded to the LLM.",
-      triggeredRule: "RULE_5_BSCSCAN_UNAVAILABLE",
+      triggeredRule: "RULE_5_ONCHAIN_UNAVAILABLE",
     };
   }
 
@@ -207,29 +221,36 @@ export function runRules(
     };
   }
 
-  // ── Rule 10: Medium-age wallet + low activity + significant amount → LLM ──
-  // A wallet aged between NEW_WALLET_DAYS and MEDIUM_WALLET_DAYS with few
-  // transactions stays suspicious even though it is not enough for a hard REJECT.
-  const walletAge = intel.walletAgeInDays;
-  const isMediumAgeWallet =
-    walletAge !== null &&
-    walletAge >= config.NEW_WALLET_DAYS &&
-    walletAge < config.MEDIUM_WALLET_DAYS;
-  const isMediumLowActivity = txCount <= config.MEDIUM_TX_THRESHOLD;
-
-  if (isMediumAgeWallet && isMediumLowActivity && isSignificantAmount) {
+  // ── Rule 10: Fund-pooling hub + significant amount → LLM ──────────────────
+  // The previous Rule 10 branched on `walletAgeInDays`, which is permanently
+  // null on chain 97 (the explorer that supplies it is deprecated), so the rule
+  // could never fire — dead code that read as protection.
+  //
+  // It is rebuilt on the real signal that IS available: the AegisVault event
+  // log. Many distinct senders converging on one recipient is the on-chain
+  // signature of a collection/pooling hub, which is worth a contextual review.
+  if (
+    !intel.aegisLogsUnavailable &&
+    intel.aegisDistinctSenders >= config.POOLING_HUB_MIN_SENDERS &&
+    isSignificantAmount
+  ) {
     return {
       decision: "NEEDS_LLM",
       reason: [
-        `Wallet aged ${formatAge(walletAge)} (medium category:`,
-        `${config.NEW_WALLET_DAYS}–${config.MEDIUM_WALLET_DAYS} days)`,
-        `with low recorded activity (${describeActivity(intel, txCount)}, threshold <= ${config.MEDIUM_TX_THRESHOLD})`,
-        `and receiving a transfer of ${amountBNB} BNB (>= ${config.SIGNIFICANT_TRANSFER_BNB} BNB).`,
-        `A semi-new profile with minimal activity requires an LLM evaluation.`,
+        `On-chain (AegisVault event log): ${intel.aegisDistinctSenders} distinct senders`,
+        `have already funded this recipient (threshold: >= ${config.POOLING_HUB_MIN_SENDERS}).`,
+        `The recipient is now receiving ${amountBNB} BNB (>= ${config.SIGNIFICANT_TRANSFER_BNB} BNB).`,
+        `Many-to-one funding is the signature of a collection or pooling hub,`,
+        `so this needs a contextual LLM evaluation.`,
       ].join(" "),
-      triggeredRule: "RULE_10_MEDIUM_WALLET_LOW_ACTIVITY",
+      triggeredRule: "RULE_10_POOLING_HUB_SIGNIFICANT_AMOUNT",
     };
   }
+
+  // ── Rule 11 (removed) ─────────────────────────────────────────────────────
+  // The old Rule 10 (medium-age wallet) was deleted: it branched on
+  // `walletAgeInDays`, permanently null on chain 97, so it could never fire.
+  // There is deliberately no third branch on wallet age anywhere in this file.
 
   // ── Default: all other cases → NEEDS_LLM ─────────────────────────────────
   // IMPORTANT: We never produce APPROVE from rule engine.
@@ -240,10 +261,4 @@ export function runRules(
       "No deterministic rejection criteria met. Forwarding to LLM for contextual risk reasoning.",
     triggeredRule: "RULE_DEFAULT",
   };
-}
-
-function formatAge(days: number | null): string {
-  if (days === null) return "unknown";
-  if (days < 1) return `${Math.round(days * 24)}h`;
-  return `${days.toFixed(1)}d`;
 }

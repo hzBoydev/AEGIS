@@ -245,16 +245,26 @@ export function getPendingHumanByEscrowId(
 
 /**
  * Finalize after the human vote: update the pending row → final + on-chain tx.
- * eligible = the human vote (not the AI recommendation).
+ *
+ * `eligible` is the OUTCOME column: eligible=1 means the funds were actually
+ * released to the recipient. `human_vote` is the operator's opinion.
+ *
+ * These are not always the same, and conflating them corrupts the agent memory:
+ * when an escrow has already expired, the vote cannot be executed and the funds
+ * go back to the sender, so `eligible` must be 0 even if the operator pressed
+ * APPROVE. Hence the separate `fundsReleased` parameter (defaults to the vote).
  */
 export function finalizeHumanDecision(input: {
   escrowId: string;
   humanVote: boolean;
+  /** Whether the funds actually went to the recipient. Default = humanVote. */
+  fundsReleased?: boolean;
   humanReason: string;
   finalReason: string;
   decidedBy: string;
   txHash: string;
 }): boolean {
+  const released = input.fundsReleased ?? input.humanVote;
   const info = db
     .prepare(
       `UPDATE decisions SET
@@ -268,7 +278,7 @@ export function finalizeHumanDecision(input: {
       WHERE escrow_id = ? AND status = 'pending_human'`
     )
     .run(
-      input.humanVote ? 1 : 0,
+      released ? 1 : 0,
       input.finalReason,
       input.decidedBy,
       input.txHash,
