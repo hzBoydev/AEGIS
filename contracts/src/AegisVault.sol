@@ -29,7 +29,9 @@ contract AegisVault is ReentrancyGuard {
      */
     uint256 public constant ORACLE_CHANGE_DELAY = 24 hours;
 
-    /** @notice On-chain size limit for `reason` (UTF-8 bytes). */
+    /**
+     * @notice On-chain size limit for `reason` (UTF-8 bytes).
+     */
     uint256 public constant MAX_REASON_BYTES = 1024;
 
     struct Escrow {
@@ -58,22 +60,13 @@ contract AegisVault is ReentrancyGuard {
 
     uint256 private nonce;
 
-    event EscrowCreated(
-        bytes32 indexed escrowId,
-        address indexed sender,
-        address indexed recipient,
-        uint256 amount
-    );
+    event EscrowCreated(bytes32 indexed escrowId, address indexed sender, address indexed recipient, uint256 amount);
     event EscrowReleased(bytes32 indexed escrowId);
     event EscrowReverted(bytes32 indexed escrowId, string reason);
     event EscrowExpired(bytes32 indexed escrowId, address indexed claimer, uint256 amount);
     event EmergencyWithdrawn(bytes32 indexed escrowId, address indexed sender, uint256 amount);
     event OracleUpdated(address indexed oldOracle, address indexed newOracle);
-    event OracleProposed(
-        address indexed oldOracle,
-        address indexed newOracle,
-        uint256 readyAt
-    );
+    event OracleProposed(address indexed oldOracle, address indexed newOracle, uint256 readyAt);
     event OracleProposalCancelled(address indexed cancelledOracle);
     event ContractPaused(address indexed by);
     event ContractUnpaused(address indexed by);
@@ -115,20 +108,12 @@ contract AegisVault is ReentrancyGuard {
         owner = msg.sender;
     }
 
-    function submitTransfer(address recipient)
-        external
-        payable
-        nonReentrant
-        whenNotPaused
-        returns (bytes32 escrowId)
-    {
+    function submitTransfer(address recipient) external payable nonReentrant whenNotPaused returns (bytes32 escrowId) {
         if (recipient == address(0)) revert InvalidRecipient();
         if (msg.value == 0) revert InvalidAmount();
 
         nonce++;
-        escrowId = keccak256(
-            abi.encodePacked(msg.sender, recipient, msg.value, block.timestamp, nonce)
-        );
+        escrowId = keccak256(abi.encodePacked(msg.sender, recipient, msg.value, block.timestamp, nonce));
 
         escrows[escrowId] = Escrow({
             sender: msg.sender,
@@ -152,24 +137,19 @@ contract AegisVault is ReentrancyGuard {
     function getEscrowData(bytes32 escrowId)
         external
         view
-        returns (
-            address sender,
-            address recipient,
-            uint256 amount,
-            Status status,
-            uint256 createdAt
-        )
+        returns (address sender, address recipient, uint256 amount, Status status, uint256 createdAt)
     {
         Escrow memory e = escrows[escrowId];
         if (e.sender == address(0)) revert EscrowNotFound();
         return (e.sender, e.recipient, e.amount, e.status, e.createdAt);
     }
 
-    function fulfillVerification(
-        bytes32 escrowId,
-        bool eligible,
-        string calldata reason
-    ) external onlyOracle nonReentrant whenNotPaused {
+    function fulfillVerification(bytes32 escrowId, bool eligible, string calldata reason)
+        external
+        onlyOracle
+        nonReentrant
+        whenNotPaused
+    {
         Escrow storage e = escrows[escrowId];
         if (e.sender == address(0)) revert EscrowNotFound();
         if (e.status != Status.PENDING) revert EscrowNotPending();
@@ -182,22 +162,18 @@ contract AegisVault is ReentrancyGuard {
 
         if (eligible) {
             e.status = Status.COMPLETED;
-            (bool ok, ) = payable(e.recipient).call{value: e.amount}("");
+            (bool ok,) = payable(e.recipient).call{value: e.amount}("");
             if (!ok) revert TransferFailed();
             emit EscrowReleased(escrowId);
         } else {
             e.status = Status.REVERTED;
-            (bool ok, ) = payable(e.sender).call{value: e.amount}("");
+            (bool ok,) = payable(e.sender).call{value: e.amount}("");
             if (!ok) revert TransferFailed();
             emit EscrowReverted(escrowId, reason);
         }
     }
 
-    function getEscrowStatus(bytes32 escrowId)
-        external
-        view
-        returns (Status status, string memory reason)
-    {
+    function getEscrowStatus(bytes32 escrowId) external view returns (Status status, string memory reason) {
         Escrow memory e = escrows[escrowId];
         if (e.sender == address(0)) revert EscrowNotFound();
         return (e.status, e.reason);
@@ -214,9 +190,7 @@ contract AegisVault is ReentrancyGuard {
     function isExpired(bytes32 escrowId) external view returns (bool) {
         Escrow memory e = escrows[escrowId];
         if (e.sender == address(0)) revert EscrowNotFound();
-        return
-            e.status == Status.PENDING &&
-            block.timestamp >= e.createdAt + ESCROW_TIMEOUT;
+        return e.status == Status.PENDING && block.timestamp >= e.createdAt + ESCROW_TIMEOUT;
     }
 
     /**
@@ -237,7 +211,7 @@ contract AegisVault is ReentrancyGuard {
         e.status = Status.EXPIRED;
         e.reason = "Escrow expired: oracle did not respond within the time limit";
 
-        (bool ok, ) = payable(sender).call{value: amount}("");
+        (bool ok,) = payable(sender).call{value: amount}("");
         if (!ok) revert TransferFailed();
 
         emit EscrowExpired(escrowId, msg.sender, amount);
@@ -264,7 +238,7 @@ contract AegisVault is ReentrancyGuard {
         e.status = Status.CANCELLED;
         e.reason = "Emergency withdrawal: contract is paused";
 
-        (bool ok, ) = payable(sender).call{value: amount}("");
+        (bool ok,) = payable(sender).call{value: amount}("");
         if (!ok) revert TransferFailed();
 
         emit EmergencyWithdrawn(escrowId, sender, amount);

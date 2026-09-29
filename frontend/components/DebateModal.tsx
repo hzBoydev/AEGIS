@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useMemo } from "react";
+import { useEffect } from "react";
 import LiveDebate, { LiveStatusBadge } from "@/components/LiveDebate";
 import { useDebateStream } from "@/components/DebateStream";
-import { HumanVoteCard, useHumanQueue } from "@/components/HumanQueue";
+import { HumanVoteCard, useHeldItem, useHumanQueue } from "@/components/HumanQueue";
 
 interface DebateModalProps {
   open: boolean;
@@ -11,21 +11,11 @@ interface DebateModalProps {
 }
 
 export default function DebateModal({ open, onClose }: DebateModalProps) {
-  const { currentId, sessionEvents } = useDebateStream();
-  const { items, votingId, vote, error } = useHumanQueue();
-
+  const { currentId } = useDebateStream();
+  const { votingId, vote, error } = useHumanQueue();
   // The pipeline HOLDs at the "human" phase, so the decision belongs right here
   // instead of behind the dashboard card.
-  const heldItem = useMemo(() => {
-    const hold = [...sessionEvents]
-      .reverse()
-      .find((e) => e.phase === "human" && e.status !== "done");
-    if (hold?.escrowId) {
-      const match = items.find((i) => i.escrow_id === hold.escrowId);
-      if (match) return match;
-    }
-    return items[0] ?? null;
-  }, [sessionEvents, items]);
+  const heldItem = useHeldItem();
 
   useEffect(() => {
     if (!open) return;

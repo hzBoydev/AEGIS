@@ -56,7 +56,7 @@ export interface FinalDecision {
 }
 
 // ── Final guards (exported & red-team tested — do not duplicate the logic) ───
-export type FinalGuard =
+type FinalGuard =
   | { kind: "fail_low_confidence" }
   | { kind: "override_malicious" }
   | { kind: "needs_human"; reason: string }
@@ -167,7 +167,6 @@ export async function runSecurityPipeline(
   amountBNB: number,
   escrowId?: string
 ): Promise<FinalDecision> {
-
   console.log(`\n[Security] ─────────────────────────────────────────────`);
   console.log(`[Security] Checking recipient: ${recipient}`);
   console.log(`[Security] Sender: ${sender}`);
@@ -770,10 +769,8 @@ export async function runSecurityPipeline(
  * the model) — guaranteed to contain the transaction count (with its source)
  * plus the AEGIS history, whatever the LLM outputs. The reason is still sent
  * on-chain (truncated when over the limit).
- *
- * Exported so it can be tested directly (smoke test) without running the full pipeline.
  */
-export function finalizeReason(
+function finalizeReason(
   reason: string,
   intel: OnChainIntel,
   memory: AddressMemory

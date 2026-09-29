@@ -751,12 +751,5 @@ export async function runRedTeam(mode: RedTeamMode = "fast"): Promise<RedTeamRep
     data: { mode, passed, failed, total: cases.length },
   });
 
-  lastReport = report;
   return report;
-}
-
-let lastReport: RedTeamReport | null = null;
-
-export function getLastRedTeamReport(): RedTeamReport | null {
-  return lastReport;
 }

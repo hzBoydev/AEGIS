@@ -9,7 +9,6 @@ import { truncateAddress } from "@/lib/utils";
 
 interface DebateSession {
   escrowId: string;
-  startedAt: number;
   updatedAt: number;
   events: StreamEvent[];
 }

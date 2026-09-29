@@ -14,10 +14,9 @@ import { useDebateStream } from "@/components/DebateStream";
 import { formatTimestamp, truncateAddress } from "@/lib/utils";
 import { fetchJson, shortApiMessage } from "@/lib/api";
 
-export interface PendingHuman {
+interface PendingHuman {
   id: number;
   escrow_id: string;
-  sender: string;
   recipient: string;
   amount: string;
   eligible: number;
@@ -61,7 +60,6 @@ interface HumanQueueValue {
   okMsg: string | null;
   votingId: number | null;
   vote: (escrowId: string, approve: boolean) => Promise<void>;
-  refresh: () => Promise<void>;
 }
 
 const HumanQueueContext = createContext<HumanQueueValue | null>(null);
@@ -88,43 +86,38 @@ export function HumanQueueProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => clearOk, [clearOk]);
 
+  // Guards against state updates once the provider has unmounted.
+  const aliveRef = useRef(true);
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => {
+      aliveRef.current = false;
+    };
+  }, []);
+
   const load = useCallback(async () => {
     try {
       const json = await fetchJson<PendingEnvelope>("/api/human/pending");
+      if (!aliveRef.current) return;
       if (!json.success) throw new Error(json.error ?? "The review queue could not be loaded.");
       setItems(dedupeByEscrow(json.data ?? []));
       setError(null);
     } catch (err) {
+      if (!aliveRef.current) return;
       setError(shortApiMessage(err));
     } finally {
-      setLoading(false);
+      if (aliveRef.current) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    let alive = true;
-
     async function initial() {
-      try {
-        const json = await fetchJson<PendingEnvelope>("/api/human/pending");
-        if (!alive) return;
-        if (!json.success) throw new Error(json.error ?? "The review queue could not be loaded.");
-        setItems(dedupeByEscrow(json.data ?? []));
-        setError(null);
-      } catch (err) {
-        if (!alive) return;
-        setError(shortApiMessage(err));
-      } finally {
-        if (alive) setLoading(false);
-      }
+      await load();
     }
 
     void initial();
     const t = setInterval(() => void load(), POLL_MS);
-    return () => {
-      alive = false;
-      clearInterval(t);
-    };
+    return () => clearInterval(t);
   }, [load]);
 
   const vote = useCallback(
@@ -158,8 +151,8 @@ export function HumanQueueProvider({ children }: { children: ReactNode }) {
   );
 
   const value = useMemo<HumanQueueValue>(
-    () => ({ items, total: items.length, loading, error, okMsg, votingId, vote, refresh: load }),
-    [items, loading, error, okMsg, votingId, vote, load]
+    () => ({ items, total: items.length, loading, error, okMsg, votingId, vote }),
+    [items, loading, error, okMsg, votingId, vote]
   );
 
   return <HumanQueueContext.Provider value={value}>{children}</HumanQueueContext.Provider>;
@@ -171,6 +164,27 @@ export function useHumanQueue(): HumanQueueValue {
     throw new Error("useHumanQueue must be used inside <HumanQueueProvider>");
   }
   return ctx;
+}
+
+/**
+ * The escrow currently blocking the pipeline: the one tied to the most recent
+ * unresolved HOLD event, falling back to the head of the queue. Shared by the
+ * blocking dialog and the debate modal so both always point at the same escrow.
+ */
+export function useHeldItem(): PendingHuman | null {
+  const { items } = useHumanQueue();
+  const { sessionEvents } = useDebateStream();
+
+  return useMemo(() => {
+    const hold = [...sessionEvents]
+      .reverse()
+      .find((e) => e.phase === "human" && e.status !== "done");
+    if (hold?.escrowId) {
+      const match = items.find((i) => i.escrow_id === hold.escrowId);
+      if (match) return match;
+    }
+    return items[0] ?? null;
+  }, [items, sessionEvents]);
 }
 
 /** Shared decision card — used by the dashboard, the dock and the modal. */
@@ -245,7 +259,7 @@ export function HumanVoteCard({
  * the human HOLD and cannot be dismissed: the pipeline is blocked until the
  * user approves or rejects.
  */
-export function HumanDecisionModal({
+function HumanDecisionModal({
   item,
   total,
   busy,
@@ -314,19 +328,8 @@ export function HumanDecisionModal({
  * unresolved, and a short confirmation bar once the decision has been sent.
  */
 export function HumanDecisionLayer() {
-  const { items, total, votingId, vote, error, okMsg } = useHumanQueue();
-  const { sessionEvents } = useDebateStream();
-
-  const target = useMemo(() => {
-    const hold = [...sessionEvents]
-      .reverse()
-      .find((e) => e.phase === "human" && e.status !== "done");
-    if (hold?.escrowId) {
-      const match = items.find((i) => i.escrow_id === hold.escrowId);
-      if (match) return match;
-    }
-    return items[0] ?? null;
-  }, [items, sessionEvents]);
+  const { total, votingId, vote, error, okMsg } = useHumanQueue();
+  const target = useHeldItem();
 
   if (target) {
     return (

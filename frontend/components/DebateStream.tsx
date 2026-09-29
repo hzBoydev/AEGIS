@@ -16,7 +16,8 @@ export interface StreamEvent {
     | "advocate"
     | "judge"
     | "final"
-    | "human";
+    | "human"
+    | "redteam";
   status: "start" | "ok" | "fail" | "skip" | "done";
   label: string;
   detail?: string;
@@ -33,6 +34,10 @@ export const PHASE_META: Record<StreamEvent["phase"], { title: string; tint: str
   judge: { title: "Verdict", tint: "var(--safe)" },
   final: { title: "Final Result", tint: "var(--text-primary)" },
   human: { title: "Manual Review", tint: "var(--bronze)" },
+  // Emitted by the red-team suite (`npm run redteam`), not part of the escrow
+  // stepper in PHASE_ORDER — and filtered out of the stream below, so this entry
+  // exists only to keep the phase union exhaustive.
+  redteam: { title: "Red Team", tint: "var(--danger)" },
 };
 
 export const PHASE_ORDER = [

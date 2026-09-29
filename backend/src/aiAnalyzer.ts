@@ -269,7 +269,7 @@ ${TX_SOURCE_RULE}
 - DO NOT add any text outside the JSON object`;
 }
 
-// ── Shared Ollama generate (used by Investigator / Advocate / Judge) ──────────
+// ── Shared Ollama generate (Investigator / Advocate / Judge / Explanation) ─────
 async function ollamaGenerate(opts: {
   prompt: string;
   temperature?: number;
@@ -587,23 +587,7 @@ ${bscscanSection}`;
  * Exported for the red-team suite (parser abuse).
  */
 export function parseLLMOutput(raw: string): LLMDecision {
-  // Strip markdown code fences if present
-  let cleaned = raw.trim();
-  cleaned = cleaned.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "");
-  cleaned = cleaned.trim();
-
-  // Extract first JSON object if there's surrounding text
-  const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) {
-    throw new Error(`No JSON object found in LLM output: ${raw.slice(0, 200)}`);
-  }
-
-  let parsed: Record<string, unknown>;
-  try {
-    parsed = JSON.parse(jsonMatch[0]) as Record<string, unknown>;
-  } catch (e) {
-    throw new Error(`Failed to parse LLM JSON: ${e}. Raw: ${raw.slice(0, 200)}`);
-  }
+  const parsed = extractJsonObject(raw);
 
   // ── Field validation ──────────────────────────────────────────────────────
   if (typeof parsed.eligible !== "boolean") {
@@ -690,26 +674,21 @@ export async function generateHardRuleExplanation(
   const { recipient, amountBNB, security, intel, ruleContext } = ctx;
 
   try {
-    // Serialized as well — an explanation must not clash with a decision call
-    // in the same Ollama queue (one model, one GPU).
-    const result = await withOllamaLock(async () => {
-      const controller = new AbortController();
-      // Short timeout for explanation — don't block pipeline
-      const EXPLAIN_TIMEOUT = Math.min(config.OLLAMA_TIMEOUT_MS, 15_000);
-      const timer = setTimeout(() => controller.abort(), EXPLAIN_TIMEOUT);
+    // Short timeout for explanation — don't block pipeline
+    const EXPLAIN_TIMEOUT = Math.min(config.OLLAMA_TIMEOUT_MS, 15_000);
 
-      const goplusSection =
-        security.status === "unavailable"
-          ? `GoPlus: UNAVAILABLE`
-          : security.status === "malicious"
+    const goplusSection =
+      security.status === "unavailable"
+        ? `GoPlus: UNAVAILABLE`
+        : security.status === "malicious"
           ? `GoPlus: MALICIOUS — Flags: ${security.riskFlags.join(", ")}`
           : `GoPlus: CLEAN`;
 
-      const bscscanSection = intel.unavailable
-        ? `BscScan: UNAVAILABLE`
-        : `BscScan: ${txCountLine(intel).trim()}, age=${intel.walletAgeInDays !== null ? `${intel.walletAgeInDays.toFixed(1)} days` : "?"}, balance=${intel.balanceBNB !== null ? `${intel.balanceBNB.toFixed(4)} BNB` : "?"}`;
+    const bscscanSection = intel.unavailable
+      ? `BscScan: UNAVAILABLE`
+      : `BscScan: ${txCountLine(intel).trim()}, age=${intel.walletAgeInDays !== null ? `${intel.walletAgeInDays.toFixed(1)} days` : "?"}, balance=${intel.balanceBNB !== null ? `${intel.balanceBNB.toFixed(4)} BNB` : "?"}`;
 
-      const prompt = `You are the AEGIS AI Oracle. Our security system has DECIDED to REJECT this transfer based on a deterministic rule.
+    const prompt = `You are the AEGIS AI Oracle. Our security system has DECIDED to REJECT this transfer based on a deterministic rule.
 
 THE DECISION IS ALREADY FINAL: REJECT (you cannot change this)
 Technical reason: ${ruleContext}
@@ -733,55 +712,25 @@ GOOD examples:
 Return ONLY a JSON string with this format:
 {"reason": "the specific explanation here"}`;
 
-      try {
-        const response = await fetch(`${config.OLLAMA_URL}/api/generate`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            model: config.OLLAMA_MODEL,
-            prompt,
-            stream: false,
-            format: "json",
-            keep_alive: "30m",
-            options: { temperature: 0.3, num_predict: 200 },
-          }),
-          signal: controller.signal,
-        });
-
-        clearTimeout(timer);
-
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-
-        const body = (await response.json()) as { response?: string };
-        if (!body.response) throw new Error("Empty response");
-
-        // Parse the reason from LLM output
-        const cleaned = body.response
-          .trim()
-          .replace(/^```(?:json)?\s*/i, "")
-          .replace(/\s*```$/i, "")
-          .trim();
-
-        const match = cleaned.match(/\{[\s\S]*\}/);
-        if (!match) throw new Error("No JSON in response");
-
-        const parsed = JSON.parse(match[0]) as Record<string, unknown>;
-        const reason = parsed.reason;
-
-        if (typeof reason === "string" && reason.trim().length > 10) {
-          return reason.trim();
-        }
-        throw new Error("Invalid reason field");
-      } finally {
-        clearTimeout(timer);
-      }
+    // Serialized like every other call (one model, one GPU) — ollamaGenerate
+    // already takes the lock, so it must not be wrapped in another one.
+    const raw = await ollamaGenerate({
+      prompt,
+      temperature: 0.3,
+      numPredict: 200,
+      timeoutMs: EXPLAIN_TIMEOUT,
     });
 
+    const reason = extractJsonObject(raw).reason;
+    if (typeof reason !== "string" || reason.trim().length <= 10) {
+      throw new Error("Invalid 'reason' field in explanation");
+    }
+
+    const result = reason.trim();
     console.log(`[LLM]     Explanation generated: ${result.slice(0, 80)}...`);
     return result;
   } catch (err) {
-    const isAbort = err instanceof Error && err.name === "AbortError";
-    if (isAbort) {
+    if (err instanceof Error && /timeout/i.test(err.message)) {
       console.warn(`[LLM]     Explanation timeout — using rule context`);
     } else {
       console.warn(`[LLM]     Explanation failed (${err}) — using rule context`);

@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import { db } from "./db.js";
 
 export interface AddressMemory {
   totalSeen: number;
@@ -21,9 +21,6 @@ export interface RecentDecision {
   amount: string;
   createdAt: string;
 }
-
-// Uses the same DB as db.ts (shared SQLite file)
-const db = new Database("aegis.db", { readonly: false, fileMustExist: false });
 
 /**
  * Fetch the AEGIS decision history for one address (as recipient).

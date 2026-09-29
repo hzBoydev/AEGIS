@@ -21,13 +21,7 @@ contract AegisVaultTest is Test {
         vm.prank(sender);
         bytes32 escrowId = vault.submitTransfer{value: 1 ether}(recipient);
 
-        (
-            address s,
-            address r,
-            uint256 amount,
-            AegisVault.Status status,
-            
-        ) = vault.getEscrowData(escrowId);
+        (address s, address r, uint256 amount, AegisVault.Status status,) = vault.getEscrowData(escrowId);
 
         assertEq(s, sender);
         assertEq(r, recipient);
@@ -140,9 +134,7 @@ contract AegisVaultTest is Test {
 
     function testCannotSetOracleInstantlyRemoved() public {
         // setOracle() lama sudah dihapus — rotasi wajib dua langkah.
-        (bool ok, ) = address(vault).call(
-            abi.encodeWithSignature("setOracle(address)", address(0x5))
-        );
+        (bool ok,) = address(vault).call(abi.encodeWithSignature("setOracle(address)", address(0x5)));
         assertFalse(ok);
     }
 
@@ -244,7 +236,7 @@ contract AegisVaultTest is Test {
 
         assertEq(sender.balance, senderBalanceBefore + 1 ether);
 
-        (AegisVault.Status status, ) = vault.getEscrowStatus(escrowId);
+        (AegisVault.Status status,) = vault.getEscrowStatus(escrowId);
         assertEq(uint256(status), uint256(AegisVault.Status.CANCELLED));
 
         bytes32[] memory pending = vault.getPendingEscrows();
@@ -291,7 +283,7 @@ contract AegisVaultTest is Test {
         vm.prank(oracle);
         vault.fulfillVerification(escrowId, true, "aman");
 
-        (AegisVault.Status status, ) = vault.getEscrowStatus(escrowId);
+        (AegisVault.Status status,) = vault.getEscrowStatus(escrowId);
         assertEq(uint256(status), uint256(AegisVault.Status.COMPLETED));
     }
 
@@ -351,10 +343,7 @@ contract AegisVaultTest is Test {
         bytes32 escrowId = vault.submitTransfer{value: 1 ether}(recipient);
 
         assertFalse(vault.isExpired(escrowId));
-        assertEq(
-            vault.expiresAt(escrowId),
-            vault.ESCROW_TIMEOUT() + escrowDataCreatedAt(escrowId)
-        );
+        assertEq(vault.expiresAt(escrowId), vault.ESCROW_TIMEOUT() + escrowDataCreatedAt(escrowId));
 
         vm.warp(block.timestamp + vault.ESCROW_TIMEOUT() - 1);
         assertFalse(vault.isExpired(escrowId));
@@ -418,7 +407,7 @@ contract AegisVaultTest is Test {
         vm.prank(sender);
         vault.claimExpired(escrowId);
 
-        (AegisVault.Status status, ) = vault.getEscrowStatus(escrowId);
+        (AegisVault.Status status,) = vault.getEscrowStatus(escrowId);
         assertEq(uint256(status), uint256(AegisVault.Status.EXPIRED));
     }
 
@@ -429,6 +418,6 @@ contract AegisVaultTest is Test {
     }
 
     function escrowDataCreatedAt(bytes32 escrowId) internal view returns (uint256 createdAt) {
-        (, , , , createdAt) = vault.getEscrowData(escrowId);
+        (,,,, createdAt) = vault.getEscrowData(escrowId);
     }
 }

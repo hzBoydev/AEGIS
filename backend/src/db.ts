@@ -1,6 +1,8 @@
 import Database from "better-sqlite3";
 
-const db = new Database("aegis.db");
+/** Shared connection to the AEGIS SQLite file. Exported for read-only modules
+ *  (e.g. agentMemory) so the process keeps a single connection. */
+export const db: Database.Database = new Database("aegis.db");
 
 // ── Schema ────────────────────────────────────────────────────────────────────
 db.exec(`
@@ -156,10 +158,15 @@ export function saveDecision(record: DecisionRecord): void {
   );
 }
 
+/** Clamp a caller-supplied LIMIT into a safe, bounded integer. */
+function toLimit(limit: number): number {
+  return Math.max(1, Math.min(500, Math.floor(limit)));
+}
+
 export function getAllDecisions(limit: number = 50): unknown[] {
   return db
     .prepare("SELECT * FROM decisions ORDER BY created_at DESC, id DESC LIMIT ?")
-    .all(Math.max(1, Math.min(500, Math.floor(limit))));
+    .all(toLimit(limit));
 }
 
 export function getDecisionsCount(): number {
@@ -178,7 +185,7 @@ export function getAllDecisionsForAddress(address: string, limit: number): unkno
        WHERE LOWER(sender) = ? OR LOWER(recipient) = ?
        ORDER BY created_at DESC, id DESC LIMIT ?`
     )
-    .all(addr, addr, Math.max(1, Math.min(500, Math.floor(limit))));
+    .all(addr, addr, toLimit(limit));
 }
 
 export function getDecisionsCountForAddress(address: string): number {

@@ -29,13 +29,6 @@ export const AEGIS_VAULT_ABI = [
   },
   {
     inputs: [{ internalType: "bytes32", name: "escrowId", type: "bytes32" }],
-    name: "emergencyWithdraw",
-    outputs: [],
-    stateMutability: "nonpayable",
-    type: "function",
-  },
-  {
-    inputs: [{ internalType: "bytes32", name: "escrowId", type: "bytes32" }],
     name: "getEscrowData",
     outputs: [
       { internalType: "address", name: "sender", type: "address" },
@@ -60,23 +53,6 @@ export const AEGIS_VAULT_ABI = [
   },
   {
     inputs: [{ internalType: "bytes32", name: "escrowId", type: "bytes32" }],
-    name: "getEscrowStatus",
-    outputs: [
-      { internalType: "uint8", name: "status", type: "uint8" },
-      { internalType: "string", name: "reason", type: "string" },
-    ],
-    stateMutability: "view",
-    type: "function",
-  },
-  {
-    inputs: [{ internalType: "bytes32", name: "escrowId", type: "bytes32" }],
-    name: "expiresAt",
-    outputs: [{ internalType: "uint256", name: "", type: "uint256" }],
-    stateMutability: "view",
-    type: "function",
-  },
-  {
-    inputs: [{ internalType: "bytes32", name: "escrowId", type: "bytes32" }],
     name: "isExpired",
     outputs: [{ internalType: "bool", name: "", type: "bool" }],
     stateMutability: "view",
@@ -97,30 +73,6 @@ export const AEGIS_VAULT_ABI = [
       { indexed: true,  name: "sender",    type: "address" },
       { indexed: true,  name: "recipient", type: "address" },
       { indexed: false, name: "amount",    type: "uint256" },
-    ],
-  },
-  {
-    type: "event",
-    name: "EscrowReleased",
-    inputs: [
-      { indexed: true, name: "escrowId", type: "bytes32" },
-    ],
-  },
-  {
-    type: "event",
-    name: "EscrowReverted",
-    inputs: [
-      { indexed: true,  name: "escrowId",  type: "bytes32" },
-      { indexed: false, name: "reason",   type: "string"  },
-    ],
-  },
-  {
-    type: "event",
-    name: "EscrowExpired",
-    inputs: [
-      { indexed: true,  name: "escrowId", type: "bytes32" },
-      { indexed: true,  name: "claimer",  type: "address" },
-      { indexed: false, name: "amount",   type: "uint256" },
     ],
   },
 ] as const;

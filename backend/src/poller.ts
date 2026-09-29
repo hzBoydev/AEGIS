@@ -7,6 +7,7 @@ import { warmupOllama } from "./aiAnalyzer.js";
 import {
   saveDecision,
   getDecisionByEscrowId,
+  getPendingHumanByEscrowId,
   finalizeHumanDecision,
 } from "./db.js";
 import { publish } from "./streamBus.js";
@@ -51,7 +52,7 @@ async function readMaxReasonBytes(): Promise<number> {
   return maxReasonBytesCache;
 }
 
-export async function submitFulfillment(
+async function submitFulfillment(
   escrowId: `0x${string}`,
   eligible: boolean,
   reason: string
@@ -103,7 +104,7 @@ function isEscrowTimeoutError(err: unknown): boolean {
 }
 
 // ── Shared: claim an expired escrow → funds returned to the sender ─────────
-export async function submitExpiredClaim(
+async function submitExpiredClaim(
   escrowId: `0x${string}`
 ): Promise<string> {
   const txHash = await walletClient.writeContract({
@@ -378,7 +379,6 @@ export async function applyHumanVote(
   escrowId: string,
   approve: boolean
 ): Promise<{ txHash: string }> {
-  const { getPendingHumanByEscrowId } = await import("./db.js");
   const row = getPendingHumanByEscrowId(escrowId);
   if (!row) {
     throw new Error("No pending human escrow for this id");
@@ -485,7 +485,7 @@ export async function applyHumanVote(
 }
 
 // ── Event listener: react to EscrowCreated within milliseconds ───────────────
-function startEventListener(): () => void {
+function startEventListener(): void {
   console.log(`⚡ [Event]  Listening for EscrowCreated events on contract ${contractAddress}...`);
 
   const FAST_FAIL_LIMIT = 5;
@@ -496,7 +496,6 @@ function startEventListener(): () => void {
   const HEALTHY_RESET_MS = 30_000;
   const basePollingInterval = publicClient.pollingInterval;
 
-  let stopped = false;
   let generation = 0;
   let currentUnwatch: (() => void) | undefined;
   let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
@@ -505,7 +504,6 @@ function startEventListener(): () => void {
   let consecutiveFailures = 0;
   let backoffStep = 0;
   let reconnectCount = 0;
-  let pollingOnlyMode = false;
 
   function teardownCurrentListener(): void {
     const unwatch = currentUnwatch;
@@ -519,7 +517,7 @@ function startEventListener(): () => void {
   }
 
   function scheduleReconnect(delayMs: number): void {
-    if (stopped || reconnectTimer !== undefined) return;
+    if (reconnectTimer !== undefined) return;
     reconnectCount = reconnectCount + 1;
     reconnectTimer = setTimeout(() => {
       reconnectTimer = undefined;
@@ -528,7 +526,7 @@ function startEventListener(): () => void {
   }
 
   function handleListenerError(err: unknown, gen: number): void {
-    if (stopped || gen !== generation) return;
+    if (gen !== generation) return;
     try {
       generation = generation + 1;
       if (healthyTimer) {
@@ -579,12 +577,11 @@ function startEventListener(): () => void {
         console.warn(`⚠️ [Event]  Unexpected listener error — reconnecting listener now...`);
       }
 
-      if (consecutiveFailures >= DEGRADE_AFTER_FAILURES && !pollingOnlyMode) {
-        pollingOnlyMode = true;
+      if (consecutiveFailures >= DEGRADE_AFTER_FAILURES) {
         console.warn(
-          `🚨 [Event]  ${consecutiveFailures} consecutive listener failures — entering POLLING-ONLY MODE. ` +
-            `fallbackPoll() is now the primary mechanism; event listener keeps retrying in background ` +
-            `(max ${MAX_BACKOFF_MS / 1000}s interval).`
+          `🚨 [Event]  ${consecutiveFailures} consecutive listener failures — event listener is degraded. ` +
+            `Reconnects are backing off (max ${MAX_BACKOFF_MS / 1000}s); the fallback poller stays ` +
+            `active as the safety net until the listener is stable again.`
         );
       }
 
@@ -599,7 +596,6 @@ function startEventListener(): () => void {
   }
 
   function attach(): void {
-    if (stopped) return;
     generation = generation + 1;
     const gen = generation;
     try {
@@ -609,7 +605,7 @@ function startEventListener(): () => void {
         eventName: "EscrowCreated",
         pollingInterval: basePollingInterval + reconnectCount,
         onLogs: (logs) => {
-          if (stopped || gen !== generation) return;
+          if (gen !== generation) return;
           for (const log of logs) {
             const args = (log as unknown as { args: { escrowId?: `0x${string}`; sender?: string; recipient?: string; amount?: bigint } }).args;
             const escrowId = args?.escrowId;
@@ -645,50 +641,26 @@ function startEventListener(): () => void {
 
     healthyTimer = setTimeout(() => {
       healthyTimer = undefined;
-      if (stopped || gen !== generation) return;
+      if (gen !== generation) return;
       const hadFailures =
         consecutiveFailures > 0 ||
         failureTimestamps.length > 0 ||
-        backoffStep > 0 ||
-        pollingOnlyMode;
+        backoffStep > 0;
       if (!hadFailures) return;
-      const wasPollingOnly = pollingOnlyMode;
       consecutiveFailures = 0;
       failureTimestamps = [];
       backoffStep = 0;
-      pollingOnlyMode = false;
-      if (wasPollingOnly) {
-        console.log(
-          `✅ [Event]  Event listener stable again — exited POLLING-ONLY MODE; event-driven processing resumed.`
-        );
-      } else {
-        console.log(
-          `⚡ [Event]  Event listener stable for ${HEALTHY_RESET_MS / 1000}s — failure counters reset.`
-        );
-      }
+      console.log(
+        `✅ [Event]  Event listener stable for ${HEALTHY_RESET_MS / 1000}s — failure counters reset.`
+      );
     }, HEALTHY_RESET_MS);
   }
 
   attach();
-
-  return () => {
-    if (stopped) return;
-    stopped = true;
-    generation = generation + 1;
-    if (reconnectTimer) {
-      clearTimeout(reconnectTimer);
-      reconnectTimer = undefined;
-    }
-    if (healthyTimer) {
-      clearTimeout(healthyTimer);
-      healthyTimer = undefined;
-    }
-    teardownCurrentListener();
-  };
 }
 
 // ── Fallback poller: safety net for missed events (RPC issues, restarts) ──────
-// Runs at a much slower cadence than the old polling-only approach.
+// Slower than the event listener on purpose — this is a net, not the primary path.
 async function fallbackPoll() {
   try {
     const pendingIds = await publicClient.readContract({
@@ -739,6 +711,3 @@ export function startEventDrivenOracle() {
   //    (catches escrows if WebSocket/RPC drops events)
   setInterval(fallbackPoll, config.POLLING_INTERVAL_MS);
 }
-
-/** @deprecated Use startEventDrivenOracle() instead */
-export const startPolling = startEventDrivenOracle;

@@ -15,9 +15,9 @@ export function apiUrl(path: string): string {
 }
 
 /** Cause of an API fetch failure — used to pick the message shown to the user. */
-export type ApiErrorKind = "network" | "http" | "payload";
+type ApiErrorKind = "network" | "http" | "payload";
 
-export class ApiError extends Error {
+class ApiError extends Error {
   readonly kind: ApiErrorKind;
   constructor(message: string, kind: ApiErrorKind) {
     super(message);
@@ -26,8 +26,7 @@ export class ApiError extends Error {
   }
 }
 
-export const BACKEND_HINT =
-  "Make sure the backend is running: cd backend && npm run dev";
+const BACKEND_HINT = "Make sure the backend is running: cd backend && npm run dev";
 
 /**
  * fetch JSON with error messages that can be shown to the user.

@@ -30,6 +30,9 @@ const DEFAULT_DEMO_MALICIOUS_ADDRESSES = [
 
 const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 
+/** GoPlus chain ID queried for address reputation: 56 = BSC Mainnet. */
+const GOPLUS_CHAIN_ID = "56";
+
 function buildSimulatedMaliciousSet(): Set<string> {
   const set = new Set<string>(
     DEFAULT_DEMO_MALICIOUS_ADDRESSES.map((a) => a.toLowerCase())
@@ -164,11 +167,9 @@ function extractRiskFlags(result: GoPlusAddressResult): string[] {
  * Testnet-only addresses may return empty results (treated as "clean").
  *
  * @param address  EVM address (0x...)
- * @param chainId  GoPlus chain ID. Default "56" (BSC Mainnet).
  */
 export async function checkAddressSecurity(
-  address: string,
-  chainId: string = "56"
+  address: string
 ): Promise<SecurityCheckResult> {
   // ── Check demo simulation first (see note above) ──────────────────────────
   const simulated = checkSimulatedMalicious(address);
@@ -186,7 +187,7 @@ export async function checkAddressSecurity(
   const url = new URL(
     `${config.GOPLUS_API_URL}/address_security/${address.toLowerCase()}`
   );
-  url.searchParams.set("chain_id", chainId);
+  url.searchParams.set("chain_id", GOPLUS_CHAIN_ID);
 
   const headers: Record<string, string> = {
     Accept: "application/json",

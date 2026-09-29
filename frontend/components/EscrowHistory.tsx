@@ -7,16 +7,12 @@ import { fetchJson, shortApiMessage } from "@/lib/api";
 
 interface Decision {
   id: number;
-  escrow_id: string;
-  sender: string;
   recipient: string;
   amount: string;
   eligible: number;
   confidence: number;
   reasoning: string;
-  tx_hash: string | null;
   status?: string;
-  human_vote?: number | null;
   created_at: string;
 }
 
@@ -127,11 +123,11 @@ export default function EscrowHistory({ address: addressOverride }: { address?: 
             <span className="pulse-bronze h-2 w-2 rounded-full bg-[var(--bronze)]" />
             Loading transaction history…
           </div>
-        ) : decisions.length === 0 && !error ? (
+        ) : decisions.length === 0 ? (
           <div className="empty-note">
             No transactions recorded for this address yet. Send a token to test Aegis protection.
           </div>
-        ) : decisions.length === 0 ? null : (
+        ) : (
           <>
             <ol className="timeline">
               {decisions.map((d) => {

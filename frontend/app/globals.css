@@ -966,21 +966,10 @@ body {
 
 /* ── Motion & Keyframes ─────────────────────────────────── */
 
-@keyframes pulse-dot {
-  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--safe) 50%, transparent); }
-  70% { box-shadow: 0 0 0 8px transparent; }
-  100% { box-shadow: 0 0 0 0 transparent; }
-}
-
 @keyframes pulse-bronze {
   0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--bronze) 50%, transparent); }
   70% { box-shadow: 0 0 0 8px transparent; }
   100% { box-shadow: 0 0 0 0 transparent; }
-}
-
-.pulse {
-  animation: pulse-dot 2s ease-in-out infinite;
-  border-radius: 50%;
 }
 
 .pulse-bronze {
@@ -1024,7 +1013,6 @@ body {
 
 @media (prefers-reduced-motion: reduce) {
   [data-reveal],
-  .pulse,
   .pulse-bronze,
   .pulse-ring,
   .stage-dot.is-live,

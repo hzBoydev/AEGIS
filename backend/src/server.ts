@@ -5,21 +5,15 @@ import {
   getAllDecisionsForAddress,
   getDecisionsCount,
   getDecisionsCountForAddress,
-  getDecisionByEscrowId,
   getEscrowIdsInvolving,
   getPendingHumanDecisions,
 } from "./db.js";
 import { getRecentEvents, subscribe, getDebateSessions } from "./streamBus.js";
-import { runRedTeam, getLastRedTeamReport, type RedTeamMode } from "./redTeam.js";
 import { applyHumanVote } from "./poller.js";
 
 const app = express();
 app.use(cors());
 app.use(express.json());
-
-app.get("/api/health", (_req, res) => {
-  res.json({ status: "ok", service: "AEGIS Oracle API" });
-});
 
 function intQuery(raw: unknown, fallback: number, min: number, max: number): number {
   const n = Number(raw);
@@ -52,19 +46,6 @@ app.get("/api/escrows", (req, res) => {
   }
 });
 
-app.get("/api/escrow/:id", (req, res) => {
-  try {
-    const decision = getDecisionByEscrowId(req.params.id);
-    if (!decision) {
-      return res.status(404).json({ success: false, error: "Escrow not found" });
-    }
-    res.json({ success: true, data: decision });
-  } catch (err) {
-    console.error("Error fetching escrow:", err);
-    res.status(500).json({ success: false, error: "Failed to fetch data" });
-  }
-});
-
 // ── Human-in-the-loop ─────────────────────────────────────────────────────────
 app.get("/api/human/pending", (_req, res) => {
   try {
@@ -93,34 +74,6 @@ app.post("/api/human/vote", async (req, res) => {
     console.error("Human vote error:", msg);
     const status = msg.includes("pending human") ? 404 : 500;
     res.status(status).json({ success: false, error: msg });
-  }
-});
-
-// ── Red-team self-test ─────────────────────────────────────────────────────────
-app.get("/api/redteam", (_req, res) => {
-  const report = getLastRedTeamReport();
-  if (!report) {
-    return res.json({ success: true, data: null });
-  }
-  res.json({ success: true, data: report });
-});
-
-// Run the suite. Mode: ?mode=fast|llm (default fast).
-// LLM mode is slow (Ollama) — JSON response is returned once it finishes.
-app.post("/api/redteam", async (req, res) => {
-  const q = (req.query.mode as string | undefined) ?? undefined;
-  const bodyMode = (req.body as { mode?: string } | undefined)?.mode;
-  const raw = bodyMode ?? q ?? "fast";
-  const mode: RedTeamMode = raw === "llm" ? "llm" : "fast";
-  try {
-    const report = await runRedTeam(mode);
-    res.json({ success: true, data: report });
-  } catch (err) {
-    console.error("Red-team error:", err);
-    res.status(500).json({
-      success: false,
-      error: err instanceof Error ? err.message : String(err),
-    });
   }
 });
 
@@ -184,7 +137,7 @@ app.get("/api/stream", (req, res) => {
   });
 });
 
-export function startServer(port: number = 3001) {
+export function startServer(port: number) {
   app.listen(port, () => {
     console.log(`🌐 Express API running on http://localhost:${port}`);
     console.log(`📡 SSE stream: http://localhost:${port}/api/stream`);
