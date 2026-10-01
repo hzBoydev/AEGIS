@@ -1,4 +1,10 @@
 import { getDefaultConfig } from '@rainbow-me/rainbowkit';
+import {
+  injectedWallet,
+  metaMaskWallet,
+  rainbowWallet,
+  walletConnectWallet,
+} from '@rainbow-me/rainbowkit/wallets';
 import { bscTestnet } from 'wagmi/chains';
 
 export const config = getDefaultConfig({
@@ -6,4 +12,15 @@ export const config = getDefaultConfig({
   projectId: '53329360a7a589acc3b8c77ff52d9359',
   chains: [bscTestnet],
   ssr: true,
+  wallets: [
+    {
+      groupName: 'Recommended',
+      wallets: [
+        injectedWallet,
+        metaMaskWallet,
+        walletConnectWallet,
+        rainbowWallet,
+      ],
+    },
+  ],
 });

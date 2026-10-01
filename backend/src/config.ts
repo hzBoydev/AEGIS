@@ -21,8 +21,28 @@ if (!RPC_URL || !CONTRACT_ADDRESS || !ORACLE_PRIVATE_KEY) {
 // ── Ollama / LLM ──────────────────────────────────────────────────────────────
 const OLLAMA_URL = process.env.OLLAMA_URL ?? "http://localhost:11434";
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL ?? "qwen3:8b";
-/** Timeout in ms for Ollama. Default 30 s. */
-const OLLAMA_TIMEOUT_MS = Number(process.env.OLLAMA_TIMEOUT_MS ?? 30_000);
+/**
+ * Timeout in ms for a single Ollama generate call. Default: 120 s.
+ *
+ * Budget, not a wish: qwen3:8b on a 6 GB card is PARTIALLY offloaded to CPU
+ * (~4.2 GB of 5.97 GB in VRAM), which measures at roughly 5-11 tok/s. The
+ * Investigator prompt alone is ~2.3k tokens and a valid JSON verdict is
+ * 100-250 tokens, i.e. 20-50 s per call — a 30 s budget aborted the Investigator
+ * mid-generation and the pipeline fail-safe REJECTed the escrow with a message
+ * that blamed the network. The escrows themselves live for 2 h
+ * (AegisVault.ESCROW_TIMEOUT), so minutes of LLM time are affordable.
+ */
+const OLLAMA_TIMEOUT_MS = Number(process.env.OLLAMA_TIMEOUT_MS ?? 120_000);
+
+/**
+ * Timeout in ms for the hard-rule explanation call (short, user-facing text).
+ * Its own budget rather than a slice of OLLAMA_TIMEOUT_MS: the old
+ * `min(OLLAMA_TIMEOUT_MS, 15s)` cap was below the time the model needs to emit
+ * even 200 tokens, so the explanation silently always fell back to ruleContext.
+ */
+const OLLAMA_EXPLAIN_TIMEOUT_MS = Number(
+  process.env.OLLAMA_EXPLAIN_TIMEOUT_MS ?? 60_000
+);
 
 /**
  * Confidence threshold for LLM decisions.
@@ -214,6 +234,7 @@ export const config = {
   OLLAMA_URL,
   OLLAMA_MODEL,
   OLLAMA_TIMEOUT_MS,
+  OLLAMA_EXPLAIN_TIMEOUT_MS,
   LLM_CONFIDENCE_THRESHOLD,
   HUMAN_CONF_MIN,
   HUMAN_ESCALATION_ENABLED,

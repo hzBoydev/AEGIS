@@ -341,7 +341,7 @@ async function ollamaGenerate(opts: {
   return withOllamaLock(async () => {
     const controller = new AbortController();
     const timer = setTimeout(
-      () => controller.abort("Ollama request timeout"),
+      () => controller.abort(),
       timeoutMs
     );
 
@@ -364,8 +364,12 @@ async function ollamaGenerate(opts: {
       });
     } catch (err) {
       clearTimeout(timer);
-      const isAbort = err instanceof Error && err.name === "AbortError";
-      if (isAbort) {
+      // The SIGNAL is the only reliable abort test. `err.name === "AbortError"`
+      // was not: an abort can surface as a TypeError("fetch failed") whose
+      // `cause` is the AbortError, and when abort() is given a non-Error reason
+      // undici rethrows that reason verbatim (a bare string, no `name` at all) —
+      // so every timeout was reported as "Ollama network error: <reason>".
+      if (controller.signal.aborted) {
         throw new Error(`Ollama timeout after ${timeoutMs}ms`);
       }
       throw new Error(`Ollama network error: ${err}`);
@@ -705,7 +709,7 @@ export async function generateHardRuleExplanation(
 
   try {
     // Short timeout for explanation — don't block pipeline
-    const EXPLAIN_TIMEOUT = Math.min(config.OLLAMA_TIMEOUT_MS, 15_000);
+    const EXPLAIN_TIMEOUT = config.OLLAMA_EXPLAIN_TIMEOUT_MS;
 
     const goplusSection =
       security.status === "unavailable"

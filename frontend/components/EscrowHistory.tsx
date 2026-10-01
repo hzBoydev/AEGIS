@@ -141,7 +141,7 @@ export default function EscrowHistory({ address: addressOverride }: { address?: 
                   ? "Awaiting Manual Review"
                   : d.eligible
                   ? "Successfully Forwarded"
-                  : "Cancelled &amp; Refunded";
+                  : "Cancelled & Refunded";
                 const expanded = expandedId === d.id;
                 const longReason = d.reasoning.length > 90;
 

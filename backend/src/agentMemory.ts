@@ -96,20 +96,32 @@ export function getAddressMemory(address: string): AddressMemory {
     };
   }
 
+  // 'fail_safe' rows are excluded here as well: they stored a fabricated
+  // risk_level of CRITICAL / confidence of 1.0, which the judge would read as
+  // a severe verified risk finding. They still count in totalSeen /
+  // totalRejected, so the rejection is never hidden — only the fake severity.
   const riskRow = db
     .prepare(
       "SELECT risk_level FROM decisions " +
       "WHERE LOWER(recipient) = ? AND risk_level IS NOT NULL AND status = 'final' " +
+      "AND decided_by IS NOT 'fail_safe' " +
       "GROUP BY risk_level ORDER BY COUNT(*) DESC LIMIT 1"
     )
     .get(addr) as { risk_level: string } | null;
 
-  // A "strong rejection" is anything that did NOT come from the LLM's own
-  // release decision: hard rule, GoPlus override, fail-safe, or human veto.
+  // A "strong rejection" means a security verdict was actually reached against
+  // this address: a hard rule / GoPlus override, or a human veto.
+  //
+  // 'fail_safe' is deliberately EXCLUDED. A fail-safe reject only means the
+  // judge was not confident enough (< HUMAN_CONF_MIN) — it carries no risk
+  // finding. Counting it here created a self-reinforcing loop: one unconfident
+  // verdict flipped hadHardRuleReject to true forever, the MEMORY block then
+  // told the judge "previously hit a hard rule", which pushed the next
+  // confidence below the floor again, and so on.
   const strongRow = db
     .prepare(
       "SELECT " +
-      "SUM(CASE WHEN decided_by IN ('hard_rule', 'fail_safe') THEN 1 ELSE 0 END) AS automated, " +
+      "SUM(CASE WHEN decided_by = 'hard_rule' THEN 1 ELSE 0 END) AS automated, " +
       "SUM(CASE WHEN decided_by = 'human' AND eligible = 0 THEN 1 ELSE 0 END) AS humanRej " +
       "FROM decisions " +
       "WHERE LOWER(recipient) = ? AND status = 'final' AND eligible = 0"
@@ -139,6 +151,7 @@ export function getAddressMemory(address: string): AddressMemory {
     .prepare(
       "SELECT eligible, confidence, risk_level, decided_by, amount, created_at " +
       "FROM decisions WHERE LOWER(recipient) = ? AND status = 'final' " +
+      "AND decided_by IS NOT 'fail_safe' " +
       "ORDER BY created_at DESC LIMIT 3"
     )
     .all(addr) as Array<{
@@ -306,7 +319,7 @@ export function getSenderMemory(address: string): SenderMemory {
       "SELECT COUNT(*) AS totalSent, " +
       "SUM(CASE WHEN eligible = 1 THEN 1 ELSE 0 END) AS approved, " +
       "SUM(CASE WHEN eligible = 0 THEN 1 ELSE 0 END) AS rejected, " +
-      "SUM(CASE WHEN eligible = 0 AND decided_by IN ('hard_rule','fail_safe','human') THEN 1 ELSE 0 END) AS strongRejections, " +
+      "SUM(CASE WHEN eligible = 0 AND decided_by IN ('hard_rule','human') THEN 1 ELSE 0 END) AS strongRejections, " +
       "COUNT(DISTINCT LOWER(recipient)) AS distinctRecipients, " +
       "MAX(created_at) AS lastSentAt " +
       "FROM decisions WHERE LOWER(sender) = ? AND status = 'final'"
