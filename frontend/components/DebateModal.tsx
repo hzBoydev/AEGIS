@@ -13,8 +13,6 @@ interface DebateModalProps {
 export default function DebateModal({ open, onClose }: DebateModalProps) {
   const { currentId } = useDebateStream();
   const { votingId, vote, error } = useHumanQueue();
-  // The pipeline HOLDs at the "human" phase, so the decision belongs right here
-  // instead of behind the dashboard card.
   const heldItem = useHeldItem();
 
   useEffect(() => {
@@ -41,33 +39,38 @@ export default function DebateModal({ open, onClose }: DebateModalProps) {
       aria-modal="true"
       aria-label="Live Verification Monitor"
     >
-      <div className="modal-panel" onClick={(e) => e.stopPropagation()}>
-        <div className="card-head">
+      <div className="modal-panel bg-white border border-black/15 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <div className="card-head bg-black/[0.02] border-b border-black/10 px-6 py-4">
           <div>
-            <p className="eyebrow">In Progress</p>
-            <p className="font-display mt-1 text-xl text-ink">Live Verification Monitor</p>
+            <p className="eyebrow">Real-Time Inspection</p>
+            <p className="font-display mt-1 text-xl font-bold text-ink">Live Verification Monitor</p>
             {currentId ? (
               <p className="text-muted mt-1 font-mono text-[11px]">
-                Escrow ID: {currentId.slice(0, 16)}…
+                Escrow ID: {currentId.slice(0, 20)}...
               </p>
             ) : (
               <p className="text-muted mt-1 text-xs">
-                Waiting for the system to process your escrow transaction…
+                Waiting for the system to process your escrow transaction...
               </p>
             )}
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-3">
             <LiveStatusBadge />
-            <button type="button" className="icon-btn" onClick={onClose} aria-label="Close popup">
+            <button
+              type="button"
+              className="icon-btn font-bold text-sm"
+              onClick={onClose}
+              aria-label="Close popup"
+            >
               ✕
             </button>
           </div>
         </div>
 
         {heldItem && (
-          <div className="card-pad hold-panel">
+          <div className="card-pad border-b border-black/10 bg-amber-500/[0.05]">
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-              <p className="eyebrow">Your Decision Is Required</p>
+              <p className="eyebrow text-amber-900">Your Decision Is Required</p>
               <p className="text-muted text-[11px]">
                 The pipeline is paused until you decide
               </p>
@@ -85,7 +88,7 @@ export default function DebateModal({ open, onClose }: DebateModalProps) {
           </div>
         )}
 
-        <div className="modal-scroll">
+        <div className="modal-scroll p-2">
           <LiveDebate bare />
         </div>
       </div>

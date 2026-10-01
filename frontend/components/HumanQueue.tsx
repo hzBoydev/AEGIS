@@ -10,24 +10,26 @@ import {
   useState,
 } from "react";
 import type { ReactNode } from "react";
-import { useDebateStream } from "@/components/DebateStream";
-import { formatTimestamp, truncateAddress } from "@/lib/utils";
 import { fetchJson, shortApiMessage } from "@/lib/api";
+import { truncateAddress } from "@/lib/utils";
+import { useDebateStream } from "@/components/DebateStream";
 
-interface PendingHuman {
+export interface PendingHuman {
   id: number;
   escrow_id: string;
+  sender: string;
   recipient: string;
   amount: string;
   eligible: number;
   confidence: number;
+  risk_level: string;
   reasoning: string;
-  risk_level: string | null;
-  human_reason: string | null;
-  created_at: string;
+  human_reason?: string;
+  decision?: string;
+  created_at?: number;
 }
 
-interface PendingEnvelope {
+interface HumanQueueEnvelope {
   success: boolean;
   data: PendingHuman[];
   error?: string;
@@ -35,21 +37,12 @@ interface PendingEnvelope {
 
 interface VoteEnvelope {
   success: boolean;
-  data?: { txHash: string };
+  data?: {
+    escrowId: string;
+    decision: string;
+    txHash: string;
+  };
   error?: string;
-}
-
-const POLL_MS = 4000;
-
-function dedupeByEscrow(rows: PendingHuman[]): PendingHuman[] {
-  const seen = new Set<string>();
-  const out: PendingHuman[] = [];
-  for (const r of rows) {
-    if (seen.has(r.escrow_id)) continue;
-    seen.add(r.escrow_id);
-    out.push(r);
-  }
-  return out;
 }
 
 interface HumanQueueValue {
@@ -64,42 +57,54 @@ interface HumanQueueValue {
 
 const HumanQueueContext = createContext<HumanQueueValue | null>(null);
 
-/**
- * Single source of truth for the human-in-the-loop queue.
- * One poller is shared by the dashboard card, the floating dock and the
- * live-debate modal, so a HOLD anywhere immediately shows an actionable UI.
- */
+const POLL_MS = 3000;
+
+function dedupeByEscrow(arr: PendingHuman[]): PendingHuman[] {
+  const seen = new Set<string>();
+  const out: PendingHuman[] = [];
+  for (const item of arr) {
+    if (!item.escrow_id || seen.has(item.escrow_id)) continue;
+    seen.add(item.escrow_id);
+    out.push(item);
+  }
+  return out;
+}
+
+function formatTimestamp(ts: number): string {
+  const d = new Date(ts);
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
 export function HumanQueueProvider({ children }: { children: ReactNode }) {
   const [items, setItems] = useState<PendingHuman[]>([]);
   const [loading, setLoading] = useState(true);
-  const [votingId, setVotingId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [okMsg, setOkMsg] = useState<string | null>(null);
-  const okTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [votingId, setVotingId] = useState<number | null>(null);
+
+  const aliveRef = useRef(true);
+  const okTimer = useRef<NodeJS.Timeout | null>(null);
 
   const clearOk = useCallback(() => {
-    if (okTimer.current) {
-      clearTimeout(okTimer.current);
-      okTimer.current = null;
-    }
+    if (okTimer.current) clearTimeout(okTimer.current);
   }, []);
 
-  useEffect(() => clearOk, [clearOk]);
-
-  // Guards against state updates once the provider has unmounted.
-  const aliveRef = useRef(true);
   useEffect(() => {
     aliveRef.current = true;
     return () => {
       aliveRef.current = false;
+      clearOk();
     };
-  }, []);
+  }, [clearOk]);
 
   const load = useCallback(async () => {
     try {
-      const json = await fetchJson<PendingEnvelope>("/api/human/pending");
+      const json = await fetchJson<HumanQueueEnvelope>("/api/human/pending");
       if (!aliveRef.current) return;
-      if (!json.success) throw new Error(json.error ?? "The review queue could not be loaded.");
+      if (!json.success) {
+        setError(json.error ?? "Failed to load the manual review queue.");
+        return;
+      }
       setItems(dedupeByEscrow(json.data ?? []));
       setError(null);
     } catch (err) {
@@ -137,7 +142,7 @@ export function HumanQueueProvider({ children }: { children: ReactNode }) {
           return;
         }
         setOkMsg(
-          `${approve ? "Transfer approved & forwarded" : "Transfer cancelled & funds refunded"} — tx ${String(json.data.txHash).slice(0, 18)}…`
+          `${approve ? "Transfer approved & forwarded" : "Transfer cancelled & funds refunded"} — tx ${String(json.data.txHash).slice(0, 18)}...`
         );
         okTimer.current = setTimeout(() => setOkMsg(null), 6000);
         await load();
@@ -166,11 +171,6 @@ export function useHumanQueue(): HumanQueueValue {
   return ctx;
 }
 
-/**
- * The escrow currently blocking the pipeline: the one tied to the most recent
- * unresolved HOLD event, falling back to the head of the queue. Shared by the
- * blocking dialog and the debate modal so both always point at the same escrow.
- */
 export function useHeldItem(): PendingHuman | null {
   const { items } = useHumanQueue();
   const { sessionEvents } = useDebateStream();
@@ -187,7 +187,7 @@ export function useHeldItem(): PendingHuman | null {
   }, [items, sessionEvents]);
 }
 
-/** Shared decision card — used by the dashboard, the dock and the modal. */
+/** Shared decision card */
 export function HumanVoteCard({
   item,
   busy,
@@ -205,30 +205,32 @@ export function HumanVoteCard({
     <article className="pending-card">
       <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
         <p className="font-display text-lg font-bold text-ink">{item.amount} BNB</p>
-        <span className="badge badge-bronze text-[11px]">
+        <span className="badge badge-bronze text-[11px] font-mono">
           Confidence: {Math.round(item.confidence * 100)}%
         </span>
       </div>
 
       <p className="text-muted mt-1.5 text-xs">
-        To: <span className="font-mono text-ink font-medium">{truncateAddress(item.recipient)}</span>
+        To: <span className="font-mono text-ink font-semibold">{truncateAddress(item.recipient)}</span>
         {item.created_at && <> · {formatTimestamp(item.created_at)}</>}
       </p>
 
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <span className={aiRec ? "tag tag-safe" : "tag tag-danger"}>
-          System Recommendation: {aiRec ? "PROCEED ADVISED" : "CANCEL ADVISED"}
+          AI Recommendation: {aiRec ? "PROCEED ADVISED" : "CANCEL ADVISED"}
         </span>
         {item.risk_level && <span className="tag">Risk Level: {item.risk_level}</span>}
       </div>
 
       {item.human_reason && (
-        <p className="text-muted mt-2 text-xs leading-relaxed bg-[var(--surface)] p-2.5 rounded-lg border border-[var(--border-soft)]">
+        <p className="text-ink mt-2.5 text-xs leading-relaxed bg-amber-500/[0.08] p-3 rounded-xl border border-amber-500/20">
           {item.human_reason}
         </p>
       )}
 
-      <p className="text-ink mt-3 text-sm leading-relaxed whitespace-pre-line">{item.reasoning}</p>
+      <p className="text-ink mt-3 text-xs leading-relaxed whitespace-pre-line font-mono bg-black/[0.02] p-2.5 rounded-lg border border-black/5">
+        {item.reasoning}
+      </p>
 
       {showActions && (
         <div className="mt-4 flex gap-2.5 pt-1">
@@ -236,17 +238,17 @@ export function HumanVoteCard({
             type="button"
             disabled={busy}
             onClick={() => onVote(item.escrow_id, true)}
-            className="btn btn-safe flex-1"
+            className="btn btn-safe flex-1 font-bold"
           >
-            {busy ? "Processing…" : "✓ Approve (Continue)"}
+            {busy ? "Processing..." : "✓ Approve (Release Funds)"}
           </button>
           <button
             type="button"
             disabled={busy}
             onClick={() => onVote(item.escrow_id, false)}
-            className="btn btn-danger flex-1"
+            className="btn btn-danger flex-1 font-bold"
           >
-            {busy ? "Processing…" : "✕ Reject (Refund Funds)"}
+            {busy ? "Processing..." : "✕ Reject (Refund Sender)"}
           </button>
         </div>
       )}
@@ -254,11 +256,6 @@ export function HumanVoteCard({
   );
 }
 
-/**
- * Focused decision dialog. It opens by itself the moment a transaction hits
- * the human HOLD and cannot be dismissed: the pipeline is blocked until the
- * user approves or rejects.
- */
 function HumanDecisionModal({
   item,
   total,
@@ -287,27 +284,27 @@ function HumanDecisionModal({
       aria-modal="true"
       aria-labelledby="decision-modal-title"
     >
-      <div className="decision-modal">
-        <div className="card-head">
+      <div className="decision-modal bg-white border border-black/20 shadow-2xl">
+        <div className="card-head bg-black/[0.02] border-b border-black/10 px-6 py-4">
           <div>
-            <p className="eyebrow">Transaction On Hold</p>
-            <p id="decision-modal-title" className="font-display mt-1 text-xl text-ink">
+            <p className="eyebrow text-amber-800">Transaction On Hold</p>
+            <p id="decision-modal-title" className="font-display mt-1 text-xl font-bold text-ink">
               Your Decision Is Required
             </p>
           </div>
           {total > 1 && <span className="badge badge-bronze">1 of {total}</span>}
         </div>
 
-        <div className="card-pad">
+        <div className="card-pad p-6">
           <p className="text-muted mb-4 text-xs leading-relaxed">
-            The pipeline is paused at the manual review stage and cannot continue until you
-            decide. Approve to release the funds to the recipient, or reject to cancel the
-            escrow and refund the sender.
+            The transaction is paused at the manual review stage and cannot proceed until you
+            decide. Approve to release funds to the recipient, or reject to cancel the
+            escrow and refund immediately.
           </p>
 
           {error && (
             <div className="alert alert-danger mb-4" role="alert">
-              <span aria-hidden className="font-bold">✕</span>
+              <span aria-hidden className="font-bold text-rose-700">✕</span>
               <span>{error}</span>
             </div>
           )}
@@ -315,7 +312,7 @@ function HumanDecisionModal({
           <HumanVoteCard item={item} busy={busy} onVote={onVote} />
 
           <p className="text-muted mt-4 border-t border-[var(--border)] pt-3 text-[11px] leading-relaxed">
-            This decision is final — it is signed by the oracle and submitted on-chain.
+            This decision is cryptographically signed and executed on the blockchain.
           </p>
         </div>
       </div>
@@ -323,10 +320,6 @@ function HumanDecisionModal({
   );
 }
 
-/**
- * Single owner of the human-decision UI: the focused dialog while a HOLD is
- * unresolved, and a short confirmation bar once the decision has been sent.
- */
 export function HumanDecisionLayer() {
   const { total, votingId, vote, error, okMsg } = useHumanQueue();
   const target = useHeldItem();
@@ -349,8 +342,8 @@ export function HumanDecisionLayer() {
   return (
     <div className="decision-dock" role="status">
       <div className="decision-dock-inner">
-        <p className="text-ink text-sm leading-relaxed">
-          <span className="text-safe font-semibold">✓ </span>
+        <p className="text-ink text-xs font-semibold leading-relaxed flex items-center gap-2">
+          <span className="text-emerald-700 font-bold">✓</span>
           {okMsg}
         </p>
       </div>

@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "tsx watch index.ts",
     "start": "tsx index.ts",
-    "redteam": "tsx redTeam.ts",
+    "redteam": "tsx src/redTeam.ts",
     "typecheck": "tsc --noEmit"
   },
   "license": "ISC",

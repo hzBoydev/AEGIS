@@ -1,10 +1,10 @@
 import React from "react";
 import type { Metadata } from "next";
-import { Playfair_Display, Inter } from "next/font/google";
+import { Space_Grotesk, Inter } from "next/font/google";
 import "./globals.css";
 import { Providers } from "@/components/Providers";
 
-const playfair = Playfair_Display({
+const spaceGrotesk = Space_Grotesk({
   variable: "--font-display",
   subsets: ["latin"],
   weight: ["500", "600", "700"],
@@ -13,21 +13,22 @@ const playfair = Playfair_Display({
 const inter = Inter({
   variable: "--font-body",
   subsets: ["latin"],
+  weight: ["400", "500", "600", "700"],
 });
 
 export const metadata: Metadata = {
-  title: "AEGIS",
-  description: "AI agent that autonomously guards the security of crypto transfers",
+  title: "AEGIS — Autonomous Escrow & AI Security Guardian",
+  description: "Autonomous multi-agent AI escrow that guards high-value crypto transfers on BNB Chain.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html
       lang="en"
-      className={`${playfair.variable} ${inter.variable} h-full antialiased`}
+      className={`${spaceGrotesk.variable} ${inter.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col">
-        <link rel="preload" as="image" href="/background.jpg" />
+      <body className="min-h-full flex flex-col font-sans">
+        <link rel="preload" as="image" href="/hero_hands.jpg" />
         <Providers>{children}</Providers>
       </body>
     </html>

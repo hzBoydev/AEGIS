@@ -1,21 +1,18 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { useAccount } from "wagmi";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
-import {
-  DebateStreamProvider,
-  type NewSession,
-} from "@/components/DebateStream";
 import Hero from "@/components/Hero";
 import SendForm from "@/components/SendForm";
-import HumanReview from "@/components/HumanReview";
 import LiveDebate from "@/components/LiveDebate";
 import DebateHistory from "@/components/DebateHistory";
-import DebateModal from "@/components/DebateModal";
 import EscrowHistory from "@/components/EscrowHistory";
-import AddressFilter from "@/components/AddressFilter";
+import HumanReview from "@/components/HumanReview";
+import DebateModal from "@/components/DebateModal";
+import { DebateStreamProvider, NewSession } from "@/components/DebateStream";
 import { HumanQueueProvider, HumanDecisionLayer } from "@/components/HumanQueue";
+import AddressFilter from "@/components/AddressFilter";
 import { isValidAddress } from "@/lib/utils";
 
 const NAV = [
@@ -30,14 +27,14 @@ function DashboardIntro() {
     <div className="pt-2 pb-1" data-reveal>
       <div className="flex items-center gap-2">
         <span className="badge badge-safe">System Connected</span>
-        <span className="text-muted text-xs">BSC Testnet</span>
+        <span className="text-muted text-xs font-mono">BSC Testnet Active</span>
       </div>
-      <h1 className="font-display mt-3 text-3xl leading-tight tracking-tight sm:text-4xl text-ink">
+      <h1 className="font-display mt-3 text-3xl font-bold leading-tight tracking-tight sm:text-4xl text-ink">
         Transaction Control Center
       </h1>
       <p className="text-muted mt-2 max-w-2xl text-sm leading-relaxed">
         Every transfer you make is protected automatically. Funds are secured in an escrow vault,
-        verified by a layered security system, and you hold full power to cancel whenever danger is suspected.
+        verified by a layered multi-agent AI security system, and you hold full power to cancel whenever danger is suspected.
       </p>
     </div>
   );
@@ -49,7 +46,7 @@ function ConnectCard() {
       <div className="card-head">
         <div>
           <p className="eyebrow">Step 01</p>
-          <p className="font-display mt-1 text-xl text-ink">Send Token Securely</p>
+          <p className="font-display mt-1 text-xl font-bold text-ink">Send Token Securely</p>
           <p className="text-muted mt-1 text-xs">
             Connect a Web3 wallet to start sending with escrow protection
           </p>
@@ -135,24 +132,22 @@ export default function Home() {
     <DebateStreamProvider newSession={newSession}>
       <HumanQueueProvider>
         <div className="flex min-h-screen flex-col">
+          {/* ── Editorial Header (Clean Brand Text) ─────────────── */}
           <header className="site-header">
-            <div className="shell flex flex-wrap items-center justify-between gap-x-4 gap-y-2 py-3 md:h-16 md:flex-nowrap md:py-0">
+            <div className="shell flex flex-wrap items-center justify-between gap-x-4 gap-y-2 py-3.5 md:h-20 md:flex-nowrap md:py-0">
               <div className="flex shrink-0 items-center gap-3">
-                <div>
-                  <p className="font-display text-lg leading-none tracking-[0.2em] font-bold text-ink">
+                <a href="#" className="flex items-center group">
+                  <span className="font-display text-2xl font-bold tracking-tight text-ink">
                     AEGIS
-                  </p>
-                  <p className="text-muted mt-1 text-[11px] tracking-wide">
-                    Smart Escrow & Security Guardian
-                  </p>
-                </div>
+                  </span>
+                </a>
               </div>
 
               <nav
                 className="nav-scroll order-3 w-full overflow-x-auto md:order-none md:w-auto md:flex-1"
                 aria-label="Main navigation"
               >
-                <div className="flex items-center gap-1 md:justify-center">
+                <div className="flex items-center gap-1.5 md:justify-center">
                   {NAV.map((item) => (
                     <a
                       key={item.id}
@@ -165,13 +160,19 @@ export default function Home() {
                 </div>
               </nav>
 
-              <div className="shrink-0 flex items-center gap-2">
-                <ConnectButton label="Connect Wallet" />
+              <div className="shrink-0 flex items-center gap-3">
+                <div className="hidden lg:flex items-center gap-2 rounded-full border border-black/10 bg-black/5 px-3 py-1.5 text-[11px] font-mono font-medium text-black">
+                  <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+                  <span>BSC Testnet</span>
+                </div>
+                <div className="scale-95">
+                  <ConnectButton label="Connect" />
+                </div>
               </div>
             </div>
           </header>
 
-          <main className="shell flex-1 pb-16 pt-8 sm:pt-10">
+          <main className="shell flex-1 pb-16 pt-6 sm:pt-10">
             {!isConnected ? <Hero /> : <DashboardIntro />}
 
             <section id="kirim-token" className="section-block" data-reveal>
@@ -210,18 +211,25 @@ export default function Home() {
             </section>
           </main>
 
+          {/* ── Minimalist Editorial Footer ───────────────────── */}
           <footer className="site-footer">
-            <div className="shell flex flex-wrap items-center justify-between gap-4 py-8">
+            <div className="shell flex flex-wrap items-center justify-between gap-6 py-10">
               <div>
-                <p className="font-display font-semibold text-sm text-ink">AEGIS — Smart Escrow Guardian</p>
-                <p className="text-muted text-xs mt-1">
-                  Automatic crypto transaction protection with layered verification and full user control.
+                <div className="flex items-center gap-2">
+                  <span className="font-display font-bold text-lg text-ink">AEGIS</span>
+                  <span className="text-muted text-xs ml-2 font-mono">Autonomous Escrow Protocol</span>
+                </div>
+                <p className="text-muted text-xs mt-2 max-w-md leading-relaxed">
+                  Layered AI multi-agent verification engine defending Web3 transactions in real time.
                 </p>
               </div>
-              <div className="text-right">
-                <span className="badge badge-bronze">BSC Testnet Active</span>
-                <p className="text-muted text-[11px] mt-1.5">
-                  © {new Date().getFullYear()} Aegis Security Protocol.
+              <div className="flex flex-col sm:items-end gap-2 text-xs text-black/60 font-mono">
+                <div className="flex items-center gap-2">
+                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                  <span>BSC Testnet Active</span>
+                </div>
+                <p className="text-[11px] text-black/40">
+                  © {new Date().getFullYear()} AEGIS Security. All rights reserved.
                 </p>
               </div>
             </div>

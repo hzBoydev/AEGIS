@@ -1,24 +1,26 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useAccount } from "wagmi";
 import { DebateEventRow } from "@/components/LiveDebate";
-import type { StreamEvent } from "@/components/DebateStream";
+import { StreamEvent } from "@/components/DebateStream";
 import { fetchJson, shortApiMessage } from "@/lib/api";
 import { truncateAddress } from "@/lib/utils";
 
+const PAGE_SIZE = 10;
+
 interface DebateSession {
   escrowId: string;
+  sender: string;
+  recipient: string;
+  amount: string;
   updatedAt: number;
   events: StreamEvent[];
 }
 
-const PAGE_SIZE = 5;
-
-function formatMs(ts: number): string {
-  const d = new Date(ts);
-  if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleString("en-US", {
+function formatMs(ms: number): string {
+  if (!ms) return "-";
+  return new Date(ms).toLocaleString(undefined, {
     day: "numeric",
     month: "short",
     hour: "2-digit",
@@ -125,20 +127,20 @@ export default function DebateHistory({ address: addressOverride }: { address?: 
       <div className="card-head">
         <div>
           <p className="eyebrow">Full Records</p>
-          <p className="font-display mt-1 text-xl text-ink">Transaction Verification Archive</p>
+          <p className="font-display mt-1 text-xl font-bold text-ink">Transaction Verification Archive</p>
           <p className="text-muted mt-1 text-xs">
             {isFiltered
               ? `Stage-by-stage verification records for address ${truncateAddress(address ?? "")}.`
               : "Stage-by-stage verification records for transactions from your wallet."}
           </p>
         </div>
-        {!loading && !error && total > 0 && <span className="badge">{total} Sessions</span>}
+        {!loading && !error && total > 0 && <span className="badge font-mono">{total} Sessions</span>}
       </div>
 
       <div className="card-pad flex flex-col gap-3">
         {error && (
           <div className="alert alert-danger" role="alert">
-            <span aria-hidden>✕</span>
+            <span aria-hidden className="font-bold text-rose-700">✕</span>
             <span>{error}</span>
           </div>
         )}
@@ -149,8 +151,8 @@ export default function DebateHistory({ address: addressOverride }: { address?: 
           </div>
         ) : loading && sessions.length === 0 ? (
           <div className="text-muted flex items-center gap-2 text-sm py-2">
-            <span className="pulse-bronze h-2 w-2 rounded-full bg-[var(--bronze)]" />
-            Loading the verification archive…
+            <span className="h-2 w-2 rounded-full bg-black animate-ping" />
+            Loading the verification archive...
           </div>
         ) : sessions.length === 0 && !error ? (
           <div className="empty-note">
@@ -184,27 +186,26 @@ export default function DebateHistory({ address: addressOverride }: { address?: 
                       {info.label}
                     </p>
                     <p className="text-muted mt-1 truncate font-mono text-[11px]">
-                      {formatMs(s.updatedAt)} · Escrow {s.escrowId.slice(0, 16)}…
+                      {formatMs(s.updatedAt)} · Escrow {s.escrowId.slice(0, 18)}...
                     </p>
                   </div>
                   <div className="flex shrink-0 items-center gap-3">
                     {info.confidence !== null && (
-                      <span className="text-muted text-xs font-medium">
+                      <span className="text-muted text-xs font-mono font-medium">
                         {Math.round(info.confidence * 100)}% confidence
                       </span>
                     )}
                     <span
-                      className="badge"
+                      className="badge font-mono text-[10px]"
                       style={{
                         borderColor: toneColor,
                         color: toneColor,
-                        background: `color-mix(in srgb, ${toneColor} 12%, var(--surface-glass))`,
                       }}
                     >
                       {info.phaseCount} Stages · {info.stepCount} Steps
                     </span>
                     <span className="text-muted text-xs font-bold" aria-hidden>
-                      {expanded ? "▴" : "▾"}
+                      {expanded ? "▲" : "▼"}
                     </span>
                   </div>
                 </button>
@@ -230,12 +231,12 @@ export default function DebateHistory({ address: addressOverride }: { address?: 
           <div className="mt-2 flex flex-col items-center gap-2 border-t border-[var(--border)] pt-4">
             <button
               type="button"
-              className="btn btn-ghost btn-sm"
+              className="btn btn-secondary btn-sm font-semibold"
               onClick={() => setVisibleCount((c) => c + PAGE_SIZE)}
             >
               Load More
             </button>
-            <p className="text-muted text-[11px]">
+            <p className="text-muted text-[11px] font-mono">
               Showing {sessions.length} of {total} sessions
             </p>
           </div>
