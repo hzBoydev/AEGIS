@@ -60,7 +60,7 @@ function checkSimulatedMalicious(address: string): SecurityCheckResult | null {
   if (!config.GOPLUS_SIMULATE) return null;
   if (!SIMULATED_MALICIOUS_ADDRESSES.has(address.toLowerCase())) return null;
   console.warn(
-    `[GoPlus] ⚠️⚠️  SIMULATED malicious verdict for ${address} — this is NOT a real GoPlus detection.`
+    `[GoPlus] ⚠️ SIMULATED malicious verdict for ${address} — this is NOT a real GoPlus detection.`
   );
   return {
     status: "malicious",
