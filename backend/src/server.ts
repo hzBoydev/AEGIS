@@ -28,6 +28,10 @@ function addressQuery(raw: unknown): string | null {
   return addr.length > 0 ? addr : null;
 }
 
+app.get("/health", (_req, res) => {
+  res.json({ status: "ok" });
+});
+
 app.get("/api/escrows", (req, res) => {
   try {
     const limit = intQuery(req.query.limit, 50, 1, 200);

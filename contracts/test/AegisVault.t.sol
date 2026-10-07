@@ -40,13 +40,13 @@ contract AegisVaultTest is Test {
         uint256 recipientBalanceBefore = recipient.balance;
 
         vm.prank(oracle);
-        vault.fulfillVerification(escrowId, true, "Address aman, riwayat wajar");
+        vault.fulfillVerification(escrowId, true, "Address safe, history normal");
 
         assertEq(recipient.balance, recipientBalanceBefore + 1 ether);
 
         (AegisVault.Status status, string memory reason) = vault.getEscrowStatus(escrowId);
         assertEq(uint256(status), uint256(AegisVault.Status.COMPLETED));
-        assertEq(reason, "Address aman, riwayat wajar");
+        assertEq(reason, "Address safe, history normal");
 
         bytes32[] memory pending = vault.getPendingEscrows();
         assertEq(pending.length, 0);
@@ -82,7 +82,7 @@ contract AegisVaultTest is Test {
         bytes32 escrowId = vault.submitTransfer{value: 1 ether}(recipient);
 
         vm.prank(oracle);
-        vault.fulfillVerification(escrowId, true, "aman");
+        vault.fulfillVerification(escrowId, true, "safe");
 
         vm.prank(oracle);
         vm.expectRevert(AegisVault.EscrowNotPending.selector);
@@ -112,7 +112,7 @@ contract AegisVaultTest is Test {
         assertEq(pending.length, 3);
 
         vm.prank(oracle);
-        vault.fulfillVerification(id2, true, "aman");
+        vault.fulfillVerification(id2, true, "safe");
 
         pending = vault.getPendingEscrows();
         assertEq(pending.length, 2);
@@ -133,7 +133,7 @@ contract AegisVaultTest is Test {
     // ── Oracle rotation: two-step + timelock ───────────────────────────────────
 
     function testCannotSetOracleInstantlyRemoved() public {
-        // setOracle() lama sudah dihapus — rotasi wajib dua langkah.
+        // The old setOracle() was removed — rotation must be two-step.
         (bool ok,) = address(vault).call(abi.encodeWithSignature("setOracle(address)", address(0x5)));
         assertFalse(ok);
     }
@@ -143,7 +143,7 @@ contract AegisVaultTest is Test {
 
         vault.proposeOracle(newOracle);
         assertEq(vault.pendingOracle(), newOracle);
-        assertEq(vault.oracle(), oracle, "oracle lama masih aktif selama delay");
+        assertEq(vault.oracle(), oracle, "old oracle still active during the delay");
 
         vm.prank(newOracle);
         vm.expectRevert(AegisVault.OracleDelayNotElapsed.selector);
@@ -211,24 +211,24 @@ contract AegisVaultTest is Test {
 
         vm.prank(oracle);
         vm.expectRevert(AegisVault.ContractIsPaused.selector);
-        vault.fulfillVerification(escrowId, true, "aman");
+        vault.fulfillVerification(escrowId, true, "safe");
     }
 
     function testEmergencyWithdrawRefundsSenderWhilePaused() public {
         vm.prank(sender);
         bytes32 escrowId = vault.submitTransfer{value: 1 ether}(recipient);
 
-        // Belum pause → tidak boleh emergency withdraw.
+        // Not paused → emergency withdrawal must not be allowed.
         vm.prank(sender);
         vm.expectRevert(AegisVault.ContractIsPaused.selector);
         vault.emergencyWithdraw(escrowId);
 
         vault.pause();
 
-        // Oracle juga tidak boleh memutuskan saat pause.
+        // The oracle must not decide while paused either.
         vm.prank(oracle);
         vm.expectRevert(AegisVault.ContractIsPaused.selector);
-        vault.fulfillVerification(escrowId, true, "tetap jalan");
+        vault.fulfillVerification(escrowId, true, "keep going");
 
         uint256 senderBalanceBefore = sender.balance;
         vm.prank(sender);
@@ -263,7 +263,7 @@ contract AegisVaultTest is Test {
         bytes32 escrowId = vault.submitTransfer{value: 1 ether}(recipient);
 
         vm.prank(oracle);
-        vault.fulfillVerification(escrowId, true, "aman");
+        vault.fulfillVerification(escrowId, true, "safe");
 
         vault.pause();
 
@@ -281,7 +281,7 @@ contract AegisVaultTest is Test {
         bytes32 escrowId = vault.submitTransfer{value: 1 ether}(recipient);
 
         vm.prank(oracle);
-        vault.fulfillVerification(escrowId, true, "aman");
+        vault.fulfillVerification(escrowId, true, "safe");
 
         (AegisVault.Status status,) = vault.getEscrowStatus(escrowId);
         assertEq(uint256(status), uint256(AegisVault.Status.COMPLETED));
@@ -401,9 +401,9 @@ contract AegisVaultTest is Test {
 
         vm.prank(oracle);
         vm.expectRevert(AegisVault.EscrowTimeout.selector);
-        vault.fulfillVerification(escrowId, true, "terlambat");
+        vault.fulfillVerification(escrowId, true, "late");
 
-        // Dana tetap bisa diklaim sender.
+        // Funds can still be claimed by the sender.
         vm.prank(sender);
         vault.claimExpired(escrowId);
 
