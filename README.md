@@ -8,9 +8,9 @@
 [![BNB Chain](https://img.shields.io/badge/BNB_Chain-Testnet-F0B90B?style=for-the-badge&logo=binance&logoColor=white)](https://testnet.bscscan.com/)
 [![Solidity](https://img.shields.io/badge/Solidity-0.8.20-363636?style=for-the-badge&logo=solidity)](https://soliditylang.org/)
 [![Next.js](https://img.shields.io/badge/Next.js-16.3.5-black?style=for-the-badge&logo=next.js)](https://nextjs.org/)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?style=for-the-badge&logo=typescript)](https://www.typescriptlang.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-7%20%7C%205-3178C6?style=for-the-badge&logo=typescript)](https://www.typescriptlang.org/)
 [![Ollama](https://img.shields.io/badge/Ollama-qwen3%3A8b-white?style=for-the-badge)](https://ollama.com/)
-[![License](https://img.shields.io/badge/License-ISC-blue?style=for-the-badge)](LICENSE)
+[![License](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)](#license)
 
 > **AEGIS** is an AI escrow oracle that guards crypto transfers before they hit the blockchain.
 > Funds are locked in a smart escrow vault, analyzed by a multi-layer AI security pipeline,
@@ -39,6 +39,9 @@
 - [Quick Start](#quick-start)
 - [API Reference](#api-reference)
 - [Roadmap & Business Model](#roadmap--business-model)
+- [Business Model](#business-model)
+- [Running Tests](#running-tests)
+- [Repository](#repository)
 - [Team](#team)
 - [Security Disclosures](#security-disclosures)
 - [License](#license)
@@ -72,9 +75,10 @@ AEGIS intercepts every transfer at the escrow level, then deploys a **three-tier
 3. **Human-in-the-Loop** - Edge cases escalate to a human operator before on-chain settlement
 
 > **Scope note, stated plainly.** AEGIS runs a fixed pipeline, not an autonomous
-> agent loop: gather evidence -> rules -> Investigator (at most one tool round) ->
-> Advocate -> Judge -> guard. The LLM chooses *which* registered tool to call, once.
-> It does not plan, retry, spawn sub-agents, or re-enter the loop on its own.
+> agent loop: gather evidence -> rules -> Investigator (bounded ReAct tool rounds) ->
+> Advocate -> Judge -> guard. Inside that frame the LLM chooses *which* registered
+> tool to call; it cannot plan past its budget, retry indefinitely, spawn
+> sub-agents, or re-enter the loop on its own.
 
 ---
 
@@ -83,8 +87,10 @@ AEGIS intercepts every transfer at the escrow level, then deploys a **three-tier
 | Feature | Description |
 |---|---|
 | Smart Escrow Vault | Funds locked in AegisVault.sol - never accessible to the oracle owner |
-| Three-Agent Debate | Investigator (tool-calling) -> Advocate (own side evidence) -> Judge, structured JSON |
-| Tool-Calling | LLM picks from 4 registered tools, one round only; tools are deny-listed by capability |
+| Three-Agent Debate | Investigator (tool-calling) -> Advocate (own tool round) -> Judge, structured JSON |
+| Native Tool Calling | Ollama `/api/chat` ReAct loop; LLM picks from 9 read-only tools, bounded per agent and per escrow |
+| Focused Re-pass | After the debate the Investigator closes its single biggest gap with tools, then the Judge rules again |
+| Lessons from Humans | Human votes become advisory lessons for the next Investigator - ground truth only, never self-reinforcement |
 | Agent Memory | SQLite-backed memory, **final decisions only** - both recipient and sender sides |
 | GoPlus Integration | Multi-chain screening of **both** the recipient and the sender (chains 56 + 97) |
 | On-Chain Intel (RPC) | Nonce, balance, EIP-7702-aware contract detection, and real AEGISVault escrow history from `eth_getLogs` |
@@ -94,7 +100,7 @@ AEGIS intercepts every transfer at the escrow level, then deploys a **three-tier
 | Escrow Timeout | Funds auto-return to sender after 2 hours if oracle is unresponsive |
 | Emergency Withdraw | Sender reclaims funds immediately if contract is paused |
 | Two-Step Oracle Rotation | 24h timelock before oracle key rotation - prevents silent SPOF takeovers |
-| Red Team Suite | Automated adversarial testing suite (redTeam.ts) for pipeline hardening |
+| Red Team Suite | Automated adversarial testing suite (`redTeam.ts`, 50 cases) for pipeline hardening |
 
 ---
 
@@ -108,15 +114,18 @@ graph TD
     SC -->|EscrowCreated| P["Event Poller<br/>polls every 8s"]
     P --> SP["Security Pipeline"]
 
-    SP --> RE["Rule Engine<br/>11 Hard Rules"]
+    SP --> RE["Rule Engine<br/>8 hard rules + 12 signals"]
     RE -->|REJECT| FV["fulfillVerification<br/>on-chain"]
     RE -->|NEEDS_LLM| AI["AI Debate System"]
 
-    AI --> INV["Investigator LLM<br/>Tool Calling (1 round)"]
-    INV --> TOOLS["Tools<br/>GoPlus / RPC / AEGIS DB"]
-    TOOLS --> ADV["Advocate LLM<br/>Own side evidence"]
+    AI --> BUD["Escrow LLM Budget<br/>hard ceiling, reserved per call"]
+    BUD --> INV["Investigator Agent<br/>ReAct loop, bounded"]
+    INV --> TOOLS["9 Read-only Tools<br/>GoPlus / RPC / AEGIS DB"]
+    TOOLS --> ADV["Advocate Agent<br/>own tool round + side evidence"]
     ADV --> JDG["Judge LLM<br/>Weighs evidence + both opinions"]
+    JDG -->|lean split, budget allows| RP["Focused Re-pass<br/>+ Judge re-decision"]
     JDG --> GRD["Final Guard<br/>TI override / confidence / lean split"]
+    RP --> GRD
 
     GRD -->|conf >= 0.80| FV
     GRD -->|conf 0.55-0.80| HUM["Human Review"]
@@ -128,6 +137,7 @@ graph TD
     B <--> DB["SQLite<br/>Agent Memory"]
     B <--> EXT["External<br/>GoPlus / RPC / Ollama"]
 ```
+
 ---
 
 ## Project Structure
@@ -141,33 +151,45 @@ AEGIS/
 |   |-- src/
 |   |   +-- AegisVault.sol            Main escrow + oracle contract
 |   |-- test/
-|   |   +-- AegisVault.t.sol          Foundry test suite
+|   |   +-- AegisVault.t.sol          Foundry test suite (30 tests)
 |   |-- script/
 |   |   +-- Deploy.s.sol              Deployment script (Forge broadcast)
 |   |-- lib/
-|   |   |-- forge-std/                Foundry standard library
-|   |   +-- openzeppelin-contracts/   OpenZeppelin v5
+|   |   |-- forge-std/                Foundry standard library (submodule)
+|   |   +-- openzeppelin-contracts/   OpenZeppelin v5 (submodule)
 |   |-- foundry.toml
-|   +-- .env                          PRIVATE_KEY and ORACLE_ADDRESS
+|   |-- .gitmodules
+|   +-- .env                          PRIVATE_KEY / ORACLE_ADDRESS / RPC_URL (git-ignored)
 |
 |-- backend/                          AI Oracle Backend (Node.js / TypeScript)
 |   |-- index.ts                      Entry point - starts poller + HTTP server
-|   |-- redTeam.ts                    Adversarial red-team test runner
 |   |-- src/
 |   |   |-- config.ts                 All env vars + viem public/wallet clients
 |   |   |-- server.ts                 Express REST + SSE server (:3001)
 |   |   |-- poller.ts                 On-chain event listener + fulfillment loop
-|   |   |-- securityPipeline.ts       Main 9-step orchestration pipeline
-|   |   |-- ruleEngine.ts             10 deterministic security rules
-|   |   |-- aiAnalyzer.ts             LLM Investigator + Judge + tool calling
-|   |   |-- tools.ts                  4 AI tools (on-chain + AEGIS DB queries)
+|   |   |-- securityPipeline.ts       Main 9-step orchestration pipeline + final guard
+|   |   |-- ruleEngine.ts             8 hard rules + 12 signals (pure, no I/O)
+|   |   |-- denylist.ts               Local GoPlus-independent denylist (RULE_12)
+|   |   |-- redTeam.ts                Adversarial red-team test runner (50 cases)
+|   |   |-- aiAnalyzer.ts             Investigator / Advocate / re-pass / Judge
+|   |   |-- agentLoop.ts              Bounded ReAct tool loop over Ollama /api/chat
+|   |   |-- ollamaChat.ts             Native tool-calling transport + shared lock
+|   |   |-- llmBudget.ts              Per-escrow hard ceiling on LLM calls
+|   |   |-- tools.ts                  9 read-only tools + scope/execution boundary
 |   |   |-- agentMemory.ts            SQLite-based per-address decision memory
+|   |   |-- agentLessons.ts           Lessons distilled from human ground truth
+|   |   |-- lessonWriter.ts           Optional post-decision lesson generation
 |   |   |-- goplusChecker.ts          GoPlus Security API integration
 |   |   |-- bscscanChecker.ts         On-chain intel: RPC + AegisVault event log
 |   |   |-- db.ts                     SQLite schema + query helpers
 |   |   |-- streamBus.ts              SSE event bus (publish/subscribe pattern)
 |   |   |-- abi.ts                    AegisVault ABI for viem
-|   |   +-- redTeam.ts                Red-team adversarial test cases
+|   |   |-- testSetup.ts              Global node:test bootstrap (DB isolation)
+|   |   +-- *.test.ts                 12 node:test suites - 204 cases
+|   |-- scripts/
+|   |   +-- cleanTestRows.ts          One-off sweeper for legacy test-* rows in aegis.db
+|   |-- data/
+|   |   +-- denylist.json             Local denylist seed read by RULE_12
 |   |-- aegis.db                      SQLite database (auto-created on first start)
 |   |-- package.json
 |   |-- tsconfig.json
@@ -177,6 +199,7 @@ AEGIS/
     |-- app/
     |   |-- layout.tsx                Root layout + RainbowKit/Wagmi providers
     |   |-- page.tsx                  Main single-page dashboard
+    |   |-- favicon.ico
     |   +-- globals.css               Global styles + design tokens
     |-- components/
     |   |-- Hero.tsx                  Landing hero section (pre-connect state)
@@ -197,11 +220,13 @@ AEGIS/
     |   |-- api.ts                    Backend API client + typed error helpers
     |   +-- utils.ts                  Address validation and utilities
     |-- public/
-    |   +-- background.jpg
+    |   +-- hero_hands.jpg
     |-- next.config.ts
+    |-- postcss.config.mjs
+    |-- eslint.config.mjs
     |-- package.json
     |-- tsconfig.json
-    +-- .env.example
+    +-- .env.example                  Copy to .env.local (NEXT_PUBLIC_*)
 ```
 
 ---
@@ -300,15 +325,17 @@ submitTransfer(recipient)
 | emergencyWithdraw(bytes32 escrowId) | Sender only when paused | Emergency fund recovery |
 | pause() and unpause() | onlyOwner | Emergency pause for oracle maintenance |
 | proposeOracle(address) | onlyOwner | Initiate oracle rotation with 24h delay |
+| cancelOracleProposal() | onlyOwner | Drop a pending rotation before it matures |
 | acceptOracle() | Pending oracle only | Finalize rotation after timelock |
 | getPendingEscrows() | view | Array of all pending escrow IDs |
 | getEscrowData(bytes32) | view | Sender, recipient, amount, status, createdAt |
 | getEscrowStatus(bytes32) | view | Current status enum and reason string |
+| expiresAt(bytes32) | view | createdAt + ESCROW_TIMEOUT |
 | isExpired(bytes32) | view | True if PENDING and ESCROW_TIMEOUT elapsed |
 
 ### Security Properties
 
-- ReentrancyGuard on all state-changing external functions
+- ReentrancyGuard on every fund-moving external function
 - Owner can never take user funds - emergencyWithdraw always returns to original sender
 - Two-step oracle rotation - new oracle must call acceptOracle() themselves
 - 24-hour timelock on rotation - prevents silent single-point-of-failure takeover
@@ -339,53 +366,127 @@ data that does not exist on BSC testnet. Each item below is what the code does n
 
 ## AI Agent Flow
 
+The hearing runs on Ollama's **native tool calling** (`/api/chat` + `tools`), so the
+Investigator decides *what* to look up instead of pre-declaring a fixed list. The
+loop is bounded at three levels: tool rounds per agent (`AGENT_MAX_STEPS`), tool
+invocations per agent (`AGENT_MAX_TOOL_CALLS`), and a hard per-escrow ceiling on
+**LLM calls** (`AGENT_MAX_LLM_CALLS`, default 12).
+
 ```mermaid
 flowchart TD
     A["EscrowCreated<br/>Event Detected"] --> B["Gather Evidence<br/>GoPlus + RPC + AegisVault logs + Memory"]
-    B --> C["Rule Engine<br/>11 Deterministic Rules"]
+    B --> C["Rule Engine<br/>8 hard rules + 12 signals"]
 
     C -->|Hard Rule Hit| D["HARD REJECT<br/>AI Explanation Generated"]
-    C -->|Ambiguous| E["Investigator LLM<br/>Round 1 Analysis"]
+    C -->|Ambiguous| E["Escrow LLM Budget<br/>reserve before every call"]
 
-    E -->|needs data| F["Tool Execution<br/>sender profile / recipient txs / AEGIS history"]
-    F --> G["Investigator LLM<br/>Round 2 Final"]
-    G --> H["Advocate LLM<br/>Steelman + own side evidence"]
-    H --> I["Judge LLM<br/>Weighs evidence and both opinions"]
+    E --> F["Investigator Agent<br/>ReAct loop over 9 read-only tools"]
+    F --> G["Advocate Agent<br/>steelman + its own tool round"]
+    G --> H["Judge #1<br/>weighs evidence + both opinions"]
 
-    I --> J["Final Guard"]
-    J -->|GoPlus malicious<br/>recipient OR sender| D
-    J -->|conf < 0.55| K["FAIL-SAFE REJECT"]
-    J -->|conf 0.55-0.80| L["HOLD - Human Review"]
-    J -->|Investigator vs Judge<br/>lean differently| L
-    J -->|conf >= 0.80| M["LLM Decides<br/>eligible true or false"]
+    H -->|lean split + budget allows| I["Focused Re-pass<br/>Investigator closes ONE gap"]
+    I --> J["Judge #2<br/>re-decides on the refined assessment"]
+    H -->|otherwise| K["Final Guard"]
+    J --> K
 
-    D  --> N["fulfillVerification<br/>stored on-chain"]
-    K  --> N
-    L  --> N
-    M  --> N
+    K -->|GoPlus malicious<br/>recipient OR sender| D
+    K -->|conf < 0.55| L["FAIL-SAFE REJECT"]
+    K -->|conf 0.55-0.80| M["HOLD - Human Review"]
+    K -->|Investigator vs Judge<br/>lean differently| M
+    K -->|conf >= 0.80| N["LLM Decides<br/>eligible true or false"]
+
+    D  --> O["fulfillVerification<br/>stored on-chain"]
+    L  --> O
+    M  -->|human vote lands| O
+    N  --> O
 ```
 
 Guard order matters and is enforced by the red-team suite: the threat-intelligence
 override runs **first**, so a GoPlus-flagged address is never recorded as a plain
 `fail_safe` just because the Judge also happened to be unsure. Both ends of the
 transfer are screened - a flagged **sender** blocks the transfer too.
+
+**A fail-safe is a refusal to decide, not a finding.** It records that the hearing
+could not run - the model was unreachable, the budget ran out, the parser rejected
+the answer. So a fail-safe row is deliberately **excluded** from the "confirmed
+malicious" count that RULE_13 reads, and from the memory prompt's strong-rejection
+warning. Counting it would turn a single outage into a self-fulfilling blacklist: the
+first outage rejects, the memory reads "previously confirmed malicious", and every
+later hearing for that address starts primed against it. What counts is a rule that
+positively identified the address, the GoPlus override, or a human veto.
+
+**The budget is a reservation ledger, not a usage tally.** Every LLM call in the
+pipeline charges it *before* it is allowed to start, so two agents cannot both
+observe "1 left" and both spend it. That is what makes the 12-call ceiling real on
+a single GPU, where each escrow also holds Ollama's serialization queue against
+every other escrow behind it. Two consequences worth knowing:
+
+- **Exhaustion is never a verdict.** If an agent cannot finish, the Investigator
+  and the re-pass throw and the escrow becomes a fail-safe REJECT. A model that
+  spends its whole budget in the tool loop and then emits a plausible-looking
+  paragraph on its way out is rejected before that text is read.
+- **The focused re-pass reserves its Judge.** Both remaining calls are charged up
+  front; if the re-decision does not fit, the re-pass does not run either. A re-pass
+  nobody can judge afterwards would leave the hearing in a state no one is
+  accountable for.
+
+`AGENT_NATIVE_TOOLS=false` restores the old two-round `needsData` contract for a
+model build whose tool calling is unreliable. With `AGENT_MAX_STEPS=1`,
+`ADVOCATE_MAX_STEPS=0` and `AGENT_MAX_FOLLOWUP_STEPS=0` that path is exactly four
+LLM calls, which is the profile the regression suite pins.
+
 ### AI Tool Catalog
+
+All nine tools are read-only. Nothing in this table can move funds, write state, or
+reach the escrow.
 
 | Tool Name | Data Source | Description |
 |---|---|---|
 | get_sender_profile | GoPlus + RPC + AegisVault logs | Security status and account profile (novelty, nonce, balance, vault history) of the sender |
-| get_recipient_recent_txs | BscScan Testnet API (best-effort) | Last 10 on-chain transactions of recipient - reports `unavailable` when the explorer cannot answer |
+| get_recipient_recent_txs | BscScan Testnet API (best-effort) | Last on-chain transactions of recipient - reports `unavailable` when the explorer cannot answer |
 | get_sender_db_history | SQLite AEGIS DB | Complete AEGIS escrow history for this sender (final decisions only) |
 | get_recipient_db_history | SQLite AEGIS DB | All escrows ever addressed to recipient (all senders) |
+| check_address_security | GoPlus | Threat-intelligence verdict for one address, plus the other endpoint for free |
+| get_address_onchain_intel | Public RPC (`eth_getBalance`/`getTransactionCount`/`getCode`) | Balance, nonce and contract status of any in-scope address |
+| get_contract_code_info | Public RPC (EIP-1967 / EIP-1822 slots) | Whether an address is a proxy, and what the code can and cannot tell us |
+| find_similar_rejected | SQLite AEGIS DB | One-hop counterparty history: who else has been rejected by or against this address |
+| recall_lessons | SQLite AEGIS DB | Lessons from human ground-truth corrections - **always advisory**, never a decision input |
 
-Tool execution is parallel and failure-isolated. Unavailable tools report UNKNOWN - never safe.
-Anything outside the catalog is dropped before execution, so a prompt injection
-cannot reach the filesystem, the network, or the escrow.
+Tool execution is parallel and failure-isolated. Unavailable tools report UNKNOWN -
+never safe. Anything outside the catalog is dropped before execution, so a prompt
+injection cannot reach the filesystem, the network, or the escrow.
+
+Three properties of this boundary are enforced in code rather than requested in the
+prompt:
+
+- **Results are data, never instructions.** Every tool result is wrapped and
+  labelled `UNTRUSTED` before it is handed back to the model, so an injection
+  carried in a transaction note or a vault event stays inside the fence.
+- **The address scope cannot be widened by the model.** Tools only accept the two
+  escrow endpoints plus addresses an *earlier* tool result already surfaced, capped
+  at `AGENT_MAX_DISCOVERED_ADDRESSES`. Discovered addresses are queryable but
+  advisory-only: they can never displace the sender or recipient as the basis of an
+  override.
+- **No tool decides.** The final guard reads the Judge's numbers and the hard rules
+  only. It has no access to tool output, so no amount of tool-sourced evidence can
+  turn a REJECT into a RELEASE.
 
 The Advocate additionally collects **its own** side evidence in code (sender GoPlus
 status, sender novelty, both sides' AEGIS DB history) before it argues. That
 pre-fetch is deterministic - no extra LLM call - and its sender result also drives
 the hard override in the final guard.
+
+### Lessons From Human Corrections
+
+When a human votes on a HOLD, that vote is ground truth: the automated path was
+wrong and the reason is known. AEGIS turns that into a lesson and recalls it to the
+next Investigator as advisory context.
+
+The rule that makes this safe is that **lessons are only ever written from ground
+truth** - a human veto, a hard rule, or a GoPlus override. A lesson is never
+distilled from the AI's own verdict, so the system cannot reinforce its own
+reasoning by citing itself. Writing happens after the escrow is settled and only
+while Ollama is idle, so it can never delay a live decision.
 
 ---
 
@@ -410,6 +511,7 @@ flowchart TD
     G --> K["History and Debate Archive"]
     H --> K
 ```
+
 ---
 
 ## Security Pipeline Rules
@@ -418,38 +520,170 @@ The deterministic rule engine runs **before any LLM call**, providing instant ha
 The rule engine can REJECT or escalate to NEEDS_LLM, but **never auto-APPROVE**.
 Only the LLM with confidence >= threshold can produce an APPROVE decision.
 
-| Rule ID | Trigger Condition | Decision |
+`runRules(input)` is pure: no network, no database, no clock. Everything it is
+allowed to know arrives in one `RuleInput` object, which is what makes the whole
+matrix testable in milliseconds with `node:test`.
+
+Two invariants hold for every rule:
+
+1. The engine **never** returns APPROVE. Only the LLM plus the confidence threshold
+   can release funds.
+2. **Unknown is not a verdict.** Missing data never causes a REJECT and is never
+   described as safe; it degrades to NEEDS_LLM. A REJECT always rests on a
+   *positively observed fact*, so one outage can neither block nor condemn an address.
+
+### Phase A - hard rejects (first match wins, in this order)
+
+| Order | Rule ID | Trigger Condition | Decision |
+|---|---|---|---|
+| 1 | RULE_0 | Recipient cannot receive funds: zero address, a known burn address, an EIP-1809 precompile (0x01..0xff), the `AegisVault` itself, or the sender itself | HARD REJECT |
+| 2 | RULE_1 | GoPlus reports malicious with at least one HARD flag | HARD REJECT |
+| 3 | RULE_1B | GoPlus reports malicious but names no flag at all | HARD REJECT |
+| 4 | RULE_8 | GoPlus phishing / drainer labels present in `rawData` | HARD REJECT |
+| 5 | RULE_12 | Exact hit in the local denylist (`DENYLIST_PATH`) - recipient or 7702 delegate | HARD REJECT |
+| 6 | RULE_13 | Recipient has a **confirmed malicious** history in AEGIS | HARD REJECT |
+| 7 | RULE_14 | Recipient is a lookalike of a counterparty this sender already paid | HARD REJECT |
+| 8 | RULE_15 | Recipient is an EIP-7702 account whose **delegate contract** is malicious | HARD REJECT |
+
+The order is the policy: the cheapest and most absolute facts come first, so the
+recorded rule id always names the strongest reason. `RULE_0` needs no intelligence at
+all - the funds provably cannot arrive - so it fires even with every data source down.
+
+`RULE_1` uses **hard flags only**. GoPlus also returns soft flags (`blacklist_doubt`,
+`gas_abuse`, `malicious_mining_activities`) which mean *suspected or abusive*, not
+*thief*: those stay `status: "clean"` and reach the hearing as `RULE_17`.
+
+### Phase B - signals (all evaluated, all delivered, high -> medium -> info)
+
+Every rule below runs on every case. The results are collected, sorted by severity
+(stable within a severity), and **every** signal is handed to the Investigator -
+an early return on the first match is what used to hide half the evidence from the
+hearing. `triggeredRule` is the first signal; REJECT results carry no signals.
+
+| Rule ID | Severity | Trigger Condition |
 |---|---|---|
-| RULE_1A | GoPlus flags the address as malicious with specific risk flags | HARD REJECT |
-| RULE_1B | GoPlus flags the address as malicious with no specific flags listed | HARD REJECT |
-| RULE_8 | GoPlus phishing / honeypot / stealing / fake-token labels in `rawData` | HARD REJECT |
-| RULE_6 | Recipient is a real smart contract, not an EOA (EIP-7702 delegations are EOAs) | HARD REJECT |
-| RULE_2 | Novel empty account (RPC nonce 0 + zero balance) + amount >= SIGNIFICANT | HARD REJECT |
-| RULE_7 | Recipient balance = 0 BNB AND amount >= SIGNIFICANT | HARD REJECT |
-| RULE_3 | Novel empty account + amount below SIGNIFICANT | NEEDS_LLM |
-| RULE_4 | GoPlus API unavailable - security status unconfirmable | NEEDS_LLM |
-| RULE_5 | On-chain data unavailable - data unverifiable | NEEDS_LLM |
-| RULE_9 | Amount >= VERY_LARGE (default 1 BNB) to any wallet | NEEDS_LLM |
-| RULE_10 | Pooling hub: >= POOLING_HUB_MIN_SENDERS distinct senders already funded this recipient through AEGIS, + significant amount | NEEDS_LLM |
-| RULE_DEFAULT | No deterministic rejection signal found | NEEDS_LLM |
+| RULE_6 | high | Recipient is a real smart contract (EIP-7702 delegations are EOAs, not contracts) |
+| RULE_16 | high | EIP-7702 delegation whose delegate was **not positively cleared** (unchecked, unavailable, partial coverage or soft-flagged) |
+| RULE_2 | high | Novel empty account (RPC nonce 0 + zero balance) + amount >= SIGNIFICANT |
+| RULE_18 | high | Sender drain pattern: an escrow burst in the window, or a sender with prior strong rejections |
+| RULE_9 | high | Amount >= VERY_LARGE (default 1 BNB) |
+| RULE_3 | medium | Novel empty account + amount below SIGNIFICANT |
+| RULE_7 | medium | Recipient balance = 0 BNB + amount >= SIGNIFICANT (and not novel) |
+| RULE_17 | medium | GoPlus returned soft flags only |
+| RULE_4 | medium | GoPlus API unavailable - security status unconfirmable |
+| RULE_5 | medium | On-chain data unavailable - data unverifiable |
+| RULE_10 | medium | Pooling hub: >= POOLING_HUB_MIN_SENDERS distinct senders already funded this recipient through AEGIS, + significant amount |
+| RULE_19 | info | Recipient has prior rejections that were **not** confirmed malicious (fail-safe, LLM-only, or an old shape rule) |
+| RULE_DEFAULT | - | Nothing matched |
+
+### Why 2, 6 and 7 were downgraded from HARD REJECT to signals
+
+They were the three rules that blocked legitimate escrows, and all three reject on
+*shape* rather than evidence:
+
+- **RULE_6** fired on any contract. A Safe multisig, an ERC-4337 smart account, a DAO
+  treasury and every deposit/payment contract legitimately receive native coin - and
+  GoPlus returns **no** flags for contract addresses, so the "evidence" was the shape
+  alone.
+- **RULE_2** fired on a fresh wallet. Fresh wallets are how new users, CEX withdrawals
+  and per-payment addresses are born; that is the normal case, not the fraud case.
+- **RULE_7** fired on a zero balance. Most wallets are empty at the moment they are
+  asked to receive something.
+
+They stay in the rule set as high/medium-severity context - they are real risk, and
+the hearing needs to see them - but they lost the power to deny because they cannot
+support that verdict. `SIGNIFICANT_TRANSFER_BNB` was raised from 0.01 to 0.1 BNB for
+the same reason: on testnet, 0.01 BNB is ordinary activity.
+
+### What counts as "confirmed malicious" (RULE_13)
+
+RULE_13 reuses a past verdict, so it is only as good as the query behind it. Counted:
+`RULE_1`, `RULE_1B`, `RULE_8`, `RULE_12`, `RULE_15`, the GoPlus override, and a human
+veto.
+
+**Not** counted, and the exclusions are the point: `fail_safe` (the judge could not
+analyse the escrow), LLM-only rejections, the downgraded shape rules 2/6/7, and
+`pending_human` rows. Treating an outage as a malicious confirmation is how a single
+Ollama hiccup becomes a permanent blacklist: the first outage rejects, the memory then
+reads "previously confirmed malicious", and the address never recovers.
+
+Because the `decisions` table has no `triggered_rule` column, the rule id is persisted
+inside the transcript JSON (`ruleEngine.triggeredRule`) on **every** decision,
+including the hard-REJECT path that runs no debate. Without it a past rejection could
+not be audited at all.
 
 `novel` is derived from RPC facts only (nonce 0 and zero balance). It is **not**
 inferred from a missing data source: when the RPC or the vault log cannot answer,
 novelty is `unknown` and no novelty rule fires. The previous `isNewWallet` boolean
 treated "no history" and "no data" as the same thing, which hard-REJECTed ordinary
-users.
+users. Unreadable memory is passed to the rules as `null` = UNKNOWN, which skips the
+history-based rules instead of pretending the history is empty.
 
-Default configurable thresholds:
+### Known limits
+
+- **The 7702 delegate check is sequential, not parallel.** The delegate address is only
+  known after `eth_getCode` answers inside `getOnChainIntel`, so issuing a second,
+  duplicated `eth_getCode` up front would buy overlapping latency at the cost of one
+  extra RPC round-trip per escrow. It runs only when the recipient is delegated, and
+  costs nothing on a plain EOA.
+- **A denylisted delegate is reported as RULE_12, not RULE_15.** The pipeline folds both
+  recipient and delegate into one `localDenylistHit` field, and RULE_12 is evaluated
+  first. Both are REJECT; only the attribution differs.
+- **Rule 14 uses the AEGIS database, not the vault event log.** Counterparties come from
+  finalized AEGIS decisions, so a first-time payee of an on-chain-only transfer is
+  invisible to poisoning detection. Extending it to `eth_getLogs` costs tens of chunked
+  round-trips per escrow, which is not cheap enough to do by default.
+- **`walletAgeInDays` is dead weight and stays that way.** The explorer that supplied it
+  is deprecated, so it is permanently null on chain 97 - which is why RULE_10 used to be
+  dead code that read as protection. RULE_10 is now built on the vault event log, and
+  nothing branches on wallet age.
+
+Rule-engine thresholds:
 
 | Environment Variable | Default | Meaning |
 |---|---|---|
-| SIGNIFICANT_TRANSFER_BNB | 0.01 BNB | Amount at or above this = significant transfer |
-| VERY_LARGE_TRANSFER_BNB | 1.0 BNB | Amount at or above this = escalate regardless |
+| SIGNIFICANT_TRANSFER_BNB | 0.1 BNB | Amount at or above this = significant transfer (severity only) |
+| VERY_LARGE_TRANSFER_BNB | 1.0 BNB | Amount at or above this = RULE_9, high severity (severity only) |
 | POOLING_HUB_MIN_SENDERS | 3 | Distinct AEGIS senders that mark a recipient as a pooling hub |
+| POISONING_PREFIX_CHARS | 4 | Leading hex chars a poisoned address must copy |
+| POISONING_SUFFIX_CHARS | 4 | Trailing hex chars a poisoned address must copy |
+| SENDER_BURST_COUNT | 3 | Escrows from one sender inside the window that count as a drain burst |
+| SENDER_BURST_WINDOW_MIN | 10 | Length of that window, in minutes |
+| DENYLIST_PATH | `./data/denylist.json` | Local denylist read by RULE_12 |
 | GOPLUS_CHAIN_IDS | `56,97` | Chains screened by GoPlus (per chain, failures reported separately) |
 | VAULT_SCAN_LOOKBACK_BLOCKS | 500000 | Block budget for the `AegisVault` escrow-history scan |
 | VAULT_LOG_CHUNK_BLOCKS | 20000 | Chunk size per `eth_getLogs` (public testnet nodes cap the range) |
 | VAULT_LOG_CONCURRENCY | 6 | Chunks fetched in parallel |
+
+Hearing / agent bounds (all read from `backend/.env`):
+
+| Environment Variable | Default | Meaning |
+|---|---|---|
+| AGENT_NATIVE_TOOLS | `true` | `false` restores the legacy two-round `needsData` contract |
+| AGENT_MAX_STEPS | 4 | ReAct rounds for the Investigator (last round is tool-free) |
+| ADVOCATE_MAX_STEPS | 2 | ReAct rounds for the Advocate; `0` = one call, no tools |
+| AGENT_MAX_TOOL_CALLS | 8 | Hard cap on tool executions per agent |
+| AGENT_MAX_LLM_CALLS | 12 | Hard per-escrow ceiling on LLM calls (reserved, not tallied) |
+| AGENT_MAX_FOLLOWUP_STEPS | 1 | Focused re-passes after Judge #1; `0` disables the re-pass |
+| AGENT_MAX_DISCOVERED_ADDRESSES | 5 | Addresses a tool result may add to query scope (advisory only) |
+| AGENT_CONTEXT_CHAR_LIMIT | 12000 | Prompt characters before oldest messages are trimmed |
+| AGENT_LESSONS_ENABLED | `true` | Write ground-truth lessons for the next Investigator |
+| LLM_CONFIDENCE_THRESHOLD | 0.80 | Confidence at or above which the Judge may decide alone |
+| HUMAN_CONF_MIN | 0.55 | Below this the hearing fails safe instead of asking a human |
+| HUMAN_ESCALATION_ENABLED | `true` | Hold the grey zone for a human vote instead of auto-rejecting |
+
+### The local denylist (RULE_12)
+
+Every third-party screen is one HTTP call from being down. When GoPlus is unavailable
+the pipeline degrades to NEEDS_LLM, which means a listed address would have no
+deterministic block at all - so RULE_12 reads a local file that has no such
+dependency.
+
+It is deliberately **not** a threat-intelligence feed: it is not downloaded, it goes
+stale, and it contains only publicly published addresses. `data/denylist.json` says so
+in its own `notice` field and names the sources. A **missing, malformed or empty file
+returns UNKNOWN, not "clean"** - a blocklist that fails open has to say so loudly, or
+the silence reads as an all-clear.
 
 The old age/activity knobs (`NEW_WALLET_DAYS`, `LOW_TX_COUNT_THRESHOLD`,
 `MEDIUM_WALLET_DAYS`, `MEDIUM_TX_THRESHOLD`) were **removed**: they only fed rules
@@ -466,9 +700,9 @@ controls nothing is worse than no knob - it reads like protection.
 | Requirement | Version | Notes |
 |---|---|---|
 | Node.js | 20+ | https://nodejs.org |
-| Foundry | Latest | curl -L https://foundry.paradigm.xyz pipe bash |
+| Foundry | Latest | `curl -L https://foundry.paradigm.xyz \| bash` then `foundryup` |
 | Ollama | Latest | https://ollama.com |
-| Git | Any | |
+| Git | Any | Submodules: `forge-std`, `openzeppelin-contracts` |
 | MetaMask | Any | Browser extension, BSC Testnet network |
 
 ### Step 1 - Clone the Repository
@@ -503,8 +737,11 @@ Follow this step only if you want to deploy your own instance.
 cd contracts
 forge install
 
-cp .env.example .env
-# Edit .env: fill PRIVATE_KEY and ORACLE_ADDRESS
+# There is no .env.example - create .env yourself with exactly these three keys:
+#   PRIVATE_KEY=0x...      deployer key (pays deployment gas)
+#   ORACLE_ADDRESS=0x...   address allowed to call fulfillVerification
+#   RPC_URL=https://bsc-testnet-rpc.publicnode.com
+# Forge reads the first two via vm.envUint / vm.envAddress.
 
 forge test -vvv
 
@@ -520,8 +757,28 @@ forge script script/Deploy.s.sol \
 cd backend
 npm install
 cp .env.example .env
+# The defaults in .env.example run the native tool-calling hearing with a
+# 12-call ceiling per escrow. AGENT_NATIVE_TOOLS=false falls back to the old
+# four-call path if your model build has unreliable tool calling.
 ```
 
+Required before the backend will boot (`config.ts` exits otherwise):
+
+| Variable | Example | Purpose |
+|---|---|---|
+| RPC_URL | `https://bsc-testnet-rpc.publicnode.com` | BSC Testnet node for polling + on-chain intel |
+| CONTRACT_ADDRESS | `0xaCFCd2005578Aa407aFC3be7553Cad81baf58f10` | Deployed `AegisVault` |
+| ORACLE_PRIVATE_KEY | `0x...` | Key that signs `fulfillVerification` - never commit it |
+
+Commonly tuned (all optional, defaults shown in `.env.example`):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| OLLAMA_URL / OLLAMA_MODEL | `http://localhost:11434` / `qwen3:8b` | Local inference endpoint |
+| GOPLUS_API_KEY | empty (anonymous) | Higher GoPlus rate limit |
+| GOPLUS_SIMULATE | `true` | Demo-only simulated verdicts - set `false` outside demos |
+| LLM_CONFIDENCE_THRESHOLD / HUMAN_CONF_MIN | `0.80` / `0.55` | Auto-release and human-escalation floors |
+| POLLING_INTERVAL_MS | `8000` | Fallback poll interval for the event listener |
 
 ```bash
 npm run dev
@@ -535,8 +792,9 @@ npm run dev
 cd frontend
 npm install
 cp .env.example .env.local
+# NEXT_PUBLIC_API_BASE_URL and NEXT_PUBLIC_CONTRACT_ADDRESS are frozen at build
+# time - change them in .env.local BEFORE running npm run dev / npm run build.
 ```
-
 
 ```bash
 npm run dev
@@ -557,41 +815,45 @@ Get free testnet BNB: https://www.bnbchain.org/en/testnet-faucet
 
 ---
 
-
----
-
 ## API Reference
 
 ### REST Endpoints
 
 | Method | Endpoint | Query Parameters | Description |
 |---|---|---|---|
-| GET | /api/escrows | limit (max 200), address | All AEGIS decision history with pagination |
-| GET | /api/debates | limit (max 100), address | All AI debate session archives |
+| GET | /api/escrows | limit (default 50, max 200), address | All AEGIS decision history with pagination |
+| GET | /api/debates | limit (default 20, max 100), address | All AI debate session archives |
 | GET | /api/human/pending | none | Escrows currently awaiting human operator review |
 | POST | /api/human/vote | body: { escrowId, approve: boolean } | Submit human operator vote |
 
 ### Server-Sent Events Stream
 
-Connect to `/api/stream` to receive real-time AI debate events.
+Connect to `/api/stream` to receive real-time AI debate events. On connect the
+server replays its ring buffer (last 80 events) so a late client does not miss a
+running session, then pushes live events; a `: ping` comment is sent every 15 s
+to keep the connection warm.
 
 Each event message is a JSON object with the following structure:
 
 ```
 {
-  escrowId   : string    - 0x-prefixed bytes32 escrow identifier
-  phase      : string    - gather | rule | investigate | judge | human | final
-  status     : string    - start | done | error
-  label      : string    - human-readable phase label for the UI
-  detail     : string    - full AI reasoning, explanation, or error message
-  data       : {
-    eligible         : boolean  - AI eligibility decision (true = release)
-    confidence       : number   - 0.0 to 1.0 confidence score
-    riskLevel        : string   - LOW | MEDIUM | HIGH | CRITICAL
-    decidedBy        : string   - hard_rule | fail_safe | llm | human_review
-    needsHuman       : boolean  - true when escalated to human operator
-    aiRecommendation : boolean  - AI suggestion shown to human reviewer
-  }
+  ts         : number   - event timestamp (ms)
+  escrowId   : string   - 0x-prefixed bytes32 escrow identifier (empty before it is known)
+  phase      : string   - escrow | evidence | rules | investigator | tools |
+                          agent_step | advocate | judge | final | human | redteam
+  status     : string   - start | ok | fail | skip | done
+  label      : string   - short human-readable phase label for the UI
+  detail     : string   - full AI reasoning, explanation, or error message (optional)
+  data       : object   - optional structured payload, commonly:
+    {
+      eligible         : boolean  - AI eligibility decision (true = release)
+      confidence       : number   - 0.0 to 1.0 confidence score
+      riskLevel        : string   - LOW | MEDIUM | HIGH | CRITICAL | UNKNOWN
+      decidedBy        : string   - hard_rule | fail_safe | llm | human_review |
+                                    override_malicious | human | expired
+      needsHuman       : boolean  - true when escalated to human operator
+      aiRecommendation : boolean  - AI suggestion shown to human reviewer
+    }
 }
 ```
 
@@ -599,18 +861,20 @@ Each event message is a JSON object with the following structure:
 
 ## Roadmap & Business Model
 
-### Phase 1 - Hackathon MVP [Current - September 2026]
+### Phase 1 - Hackathon MVP [Current - October 2026]
 
 - [x] AegisVault smart contract with escrow and oracle pattern
 - [x] AI security pipeline: Rule Engine -> Investigator -> Advocate -> Judge -> guard
-- [x] Tool-calling with 4 data gathering tools (deny-listed by capability)
+- [x] Native tool-calling hearing with 9 read-only tools, bounded per agent and per escrow
+- [x] Focused re-pass: the Investigator closes its biggest gap, then the Judge rules again
 - [x] Agent memory via SQLite, final decisions only, recipient **and** sender side
 - [x] GoPlus multi-chain screening of recipient and sender
 - [x] Real on-chain AEGIS escrow history read from `AegisVault` logs over RPC
 - [x] Human-in-the-loop escalation with full frontend UI
 - [x] Live SSE debate stream with real-time frontend phase updates
 - [x] Emergency pause and two-step oracle rotation with 24-hour timelock
-- [x] Automated red team adversarial test suite
+- [x] Automated red team adversarial test suite (50 deterministic cases)
+- [x] Test suites green: 30 Foundry + 204 `node:test` + 50 red-team cases
 - [x] Deployed and live on BNB Chain Testnet
 
 ---
@@ -619,7 +883,7 @@ Each event message is a JSON object with the following structure:
 
 - [ ] Multi-chain deployment: Ethereum Mainnet, Polygon, Arbitrum, Base, BSC Mainnet
 - [ ] Decentralized oracle network: multi-sig committee with 5+ nodes replaces single oracle
-- [ ] LLM upgrade: migrate from Qwen3:8b to GPT-4o or Claude 3.5 Sonnet
+- [ ] LLM upgrade: swap the local Qwen3:8b for a frontier hosted model (GPT / Claude class) behind the same bounded hearing
 - [ ] Formal smart contract audit by CertiK, Hacken, or Trail of Bits
 - [ ] On-chain reputation scores published as ERC-compatible oracle data feeds
 - [ ] ML-enhanced rule engine: generate new rules from historical decision patterns
@@ -706,8 +970,9 @@ Tier 4: TOKEN ECONOMY (AGS Governance Token)
 Over $10 billion USD is lost to crypto scams every year. AEGIS stops fraudulent transactions
 before they happen - not after. We have shipped a working product deployed on-chain with a
 three-agent debate architecture (Investigator, Advocate, Judge) that has no direct precedent in
-Web3 security. Every transfer enters an escrow vault, passes through an 11-rule deterministic
-engine, and is evaluated by that debate before a single token moves. Both ends of the transfer are
+Web3 security. Every transfer enters an escrow vault, passes through a deterministic
+engine (8 hard rules, plus 12 severity-ranked signals handed to the hearing), and is
+evaluated by that debate before a single token moves. Both ends of the transfer are
 screened against threat intelligence, and a flag overrides the debate outright. The oracle
 cryptographically cannot take user funds. The system fails safe by design. Human operators hold
 override authority. The pipeline is a fixed, bounded process - not a self-directed agent loop -
@@ -747,12 +1012,24 @@ cd contracts
 forge test -vvv
 ```
 
+30 tests - escrow lifecycle, timeout claim, pause/emergency paths, and the
+two-step oracle rotation with its 24 h timelock.
+
 ### Backend Red Team Tests
 
 ```bash
 cd backend
 npm run redteam
 ```
+
+50 deterministic cases - no model required. `npm run redteam -- llm` also runs the
+live prompt-injection cases against Ollama.
+
+> The guard cases read `LLM_CONFIDENCE_THRESHOLD` and `HUMAN_CONF_MIN` from
+> `backend/.env`. With the shipped defaults (`0.80` / `0.55`) the suite is 50/50;
+> a demo-tuned `.env` (e.g. threshold `0.99`) will legitimately turn some
+> `judge` expectations into `needs_human`. Run with the defaults when you need a
+> clean signal.
 
 The red team suite validates:
 
@@ -761,6 +1038,29 @@ The red team suite validates:
 - JSON parsing edge cases from malformed or truncated LLM output
 - Tool-calling hallucination detection (invalid tool names rejected at the catalog)
 - Fail-safe behavior on LLM timeout, error, or low-confidence output
+- **Injection carried inside a tool result** stays fenced data rather than becoming an instruction
+- **Unregistered tool names** are refused and never executed
+- **Scope escape** - an out-of-scope address cannot be queried, whatever the model asks for
+- **Exhaustion is not approval** - a tool-only run or a transport error yields no verdict
+- **Tools do not decide** - the final guard ignores tool output entirely
+- **Ground truth only** - a lesson cannot be written from the AI's own verdict
+
+### Backend Unit Tests
+
+```bash
+cd backend
+npm test
+```
+
+204 cases across 12 suites covering the rule engine matrix, the LLM-call budget
+(all-or-nothing reservations), the tool registry and scope boundary, agent-loop
+termination and fail-safe behaviour, denylist and evidence flow, lesson storage,
+DB isolation, and a legacy-path regression profile that pins the exact four-call
+baseline. The bootstrap in `src/testSetup.ts` points every suite at `:memory:`,
+so `npm test` never writes to the real `aegis.db`.
+
+`npm run clean-test-rows` is the one-off sweeper for legacy `test-*` rows written
+before that protection existed - dry run by default, `--apply` to delete.
 
 ### Type Checking
 
@@ -768,8 +1068,8 @@ The red team suite validates:
 # Backend TypeScript type check
 cd backend && npm run typecheck
 
-# Frontend: build process validates all TypeScript types
-cd frontend && npm run build
+# Frontend: lint + build (the build validates every TypeScript type)
+cd frontend && npm run lint && npm run build
 ```
 
 ---
@@ -806,11 +1106,11 @@ cd frontend && npm run build
 
 ## License
 
-Licensed under the **ISC License**.
+Licensed under the **MIT License**.
 
 ---
 
-Built for the Web3 Hackathon 2026.
+Built for the Indonesia Web3 Hackathon 2026.
 
 Protecting every transfer, one escrow at a time.
 

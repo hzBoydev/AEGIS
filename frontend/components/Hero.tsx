@@ -34,14 +34,6 @@ const PIPELINE = [
   { name: "Human Review", sub: "User Sovereignty" },
 ];
 
-const TRUST_LOGOS = [
-  { name: "BNB Chain", tag: "Ecosystem" },
-  { name: "RainbowKit", tag: "Wallet Connect" },
-  { name: "Wagmi / Viem", tag: "Core Web3" },
-  { name: "Solidity", tag: "Smart Escrow" },
-  { name: "Multi-Agent AI", tag: "Debate Engine" },
-  { name: "BSC Testnet", tag: "Live Network" },
-];
 
 export default function Hero() {
   const [sparkActive, setSparkActive] = useState(false);
@@ -54,7 +46,7 @@ export default function Hero() {
   };
 
   return (
-    <section className="relative w-full py-4 sm:py-8">
+    <section className="relative w-full py-2 sm:py-3">
       {/* ── Main Hero Editorial Banner ─────────────────────── */}
       <div className="relative mx-auto max-w-5xl text-center" data-reveal>
         {/* Subtle pill tag */}
@@ -66,7 +58,7 @@ export default function Hero() {
         </div>
 
         {/* Hero Title with Refined Headline */}
-        <h1 className="mt-6 font-display text-4xl font-bold tracking-tight text-[#111111] sm:text-6xl lg:text-[4.2rem] lg:leading-[1.06]">
+        <h1 className="mt-6 font-display text-3xl font-bold tracking-tight text-[#111111] sm:text-5xl lg:text-[3.6rem] lg:leading-[1.06]">
           Autonomous Escrow That
           <br />
           <span className="relative inline-block text-black">
@@ -76,7 +68,7 @@ export default function Hero() {
         </h1>
 
         {/* Subtitle */}
-        <p className="mx-auto mt-6 max-w-2xl text-[15px] leading-relaxed text-[#55524d] sm:text-base">
+        <p className="mx-auto mt-6 max-w-2xl text-[14px] leading-relaxed text-[#55524d] sm:text-[15px]">
           We protect your Web3 transfers with autonomous multi-agent AI verification
           and non-custodial smart escrow before funds ever leave your hands.
         </p>
@@ -102,7 +94,7 @@ export default function Hero() {
 
       {/* ── Halftone Michelangelo Hands Visual ──────────────── */}
       <div
-        className="animate-float relative mx-auto mt-10 max-w-5xl overflow-hidden rounded-2xl border border-black/10 bg-[#faf9f5] shadow-2xl shadow-black/5"
+        className="animate-float relative mx-auto mt-6 max-w-5xl overflow-hidden rounded-2xl border border-black/10 bg-[#faf9f5] shadow-2xl shadow-black/5"
         data-reveal
         style={{ "--reveal-delay": "0.15s" } as React.CSSProperties}
         onMouseEnter={() => setSparkActive(true)}
@@ -160,29 +152,6 @@ export default function Hero() {
         </div>
       </div>
 
-      {/* ── Social Proof / Ecosystem Strip ───────────────────── */}
-      <div className="mx-auto mt-8 max-w-5xl text-center" data-reveal style={{ "--reveal-delay": "0.2s" } as React.CSSProperties}>
-        <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-black/50 font-mono">
-          Trusted by teams of every scale
-        </p>
-
-        <div className="mt-4 flex flex-wrap items-center justify-center gap-3 sm:gap-6">
-          {TRUST_LOGOS.map((logo) => (
-            <div
-              key={logo.name}
-              className="flex items-center gap-2 rounded-xl border border-black/10 bg-white/80 px-4 py-2 backdrop-blur-sm transition-all duration-200 hover:-translate-y-1 hover:border-black/30 hover:bg-white hover:shadow-md"
-            >
-              <span className="font-display text-xs font-bold tracking-tight text-black">
-                {logo.name}
-              </span>
-              <span className="rounded bg-black/5 px-1.5 py-0.5 text-[9px] font-mono text-black/70">
-                {logo.tag}
-              </span>
-            </div>
-          ))}
-        </div>
-      </div>
-
       {/* ── 3 Feature Pillars (Step Cards) ────────────────────── */}
       <div className="mx-auto mt-12 max-w-5xl" data-reveal style={{ "--reveal-delay": "0.25s" } as React.CSSProperties}>
         <div className="grid gap-4 sm:grid-cols-3">
@@ -206,10 +175,7 @@ export default function Hero() {
                 </p>
               </div>
 
-              <div className="mt-5 flex items-center gap-1.5 text-[11px] font-semibold text-black/70 group-hover:text-black">
-                <span>Explore mechanism</span>
-                <span className="transition-transform duration-200 group-hover:translate-x-1.5">→</span>
-              </div>
+
             </div>
           ))}
         </div>

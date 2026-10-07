@@ -1,7 +1,28 @@
+# dependencies & build output
 node_modules/
-.env
 .next/
 out/
-cache/
-broadcast/
+dist/
+build/
+*.tsbuildinfo
+
+# environment (never commit real env files)
+.env
+.env.*
+!.env.example
+
+# local databases
+*.db
+*.db-shm
+*.db-wal
+*.db.bak
+*.sqlite
+
+# logs
 *.log
+npm-debug.log*
+
+# os / editor
+.DS_Store
+.idea/
+.vscode/

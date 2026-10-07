@@ -23,8 +23,12 @@ const LABEL_MAP: Record<string, string> = {
   "Investigator: supports REJECT": "🔍 Investigator — Recommends Reject",
   "Investigator (update): supports RELEASE": "🔍 Investigator (updated) — Recommends Release",
   "Investigator (update): supports REJECT": "🔍 Investigator (updated) — Recommends Reject",
+  "Investigator (re-pass): supports RELEASE": "🔍 Investigator (re-examined) — Recommends Release",
+  "Investigator (re-pass): supports REJECT": "🔍 Investigator (re-examined) — Recommends Reject",
   "Judge: RULING RELEASE": "⚖️ Judge — Rules: Release Funds",
   "Judge: RULING REJECT": "⚖️ Judge — Rules: Return Funds",
+  "Judge (revised): RULING RELEASE": "⚖️ Judge — Revised Ruling: Release Funds",
+  "Judge (revised): RULING REJECT": "⚖️ Judge — Revised Ruling: Return Funds",
   "REJECTED (hard rule)": "🚫 Blocked by Security Rule",
   "REJECTED (fail-safe)": "🛡️ Blocked — AI Uncertainty",
   "REJECTED (low confidence)": "🛡️ Blocked — Low Confidence",
@@ -36,6 +40,18 @@ const LABEL_MAP: Record<string, string> = {
   "Investigator assessing the case": "🤖 AI Investigator Starting Analysis",
   "Investigator second round (additional evidence)": "🔄 Re-analysing with Extra Evidence",
   "Judge weighing the evidence + both opinions": "⚖️ Judge Reviewing All Arguments",
+  "Judge requests more evidence": "❓ Judge — Requests Additional Evidence",
+  "Judge ruling without a further evidence round": "⚖️ Judge — Ruling on Current Evidence",
+  "Investigator focused re-pass (evidence requested by the Judge)":
+    "🔍 Investigator — Re-examining One Question",
+  "Judge re-deciding after the focused re-pass": "⚖️ Judge — Weighing the Re-examined Evidence",
+  "Focused re-pass failed — Judge rules on the original evidence":
+    "⚠️ Re-pass Failed — Judge Rules on Original Evidence",
+  "Judge's final ruling failed": "🛑 Judge — Final Ruling Failed (fail-safe)",
+  "Evidence request cannot be granted — re-pass disabled":
+    "🚫 Evidence Request Not Available",
+  "Evidence request cannot be granted — LLM call budget exhausted":
+    "🚫 Evidence Request Not Affordable",
   "Explaining the hard rule rejection": "📝 Generating Human-Readable Explanation",
   "All tools failed": "⚠️ External Data Sources Unavailable",
 };
@@ -314,7 +330,7 @@ export default function LiveDebate({ bare = false, onOpenPopup }: LiveDebateProp
     ) : (
       <div
         ref={listRef}
-        className="scroll-thin flex max-h-80 flex-col overflow-y-auto px-5 py-2"
+        className="scroll-thin flex max-h-[460px] flex-col overflow-y-auto px-5 py-2"
       >
         {sessionEvents.map((ev, i) => (
           <DebateEventRow
@@ -347,7 +363,7 @@ export default function LiveDebate({ bare = false, onOpenPopup }: LiveDebateProp
 
   /* ── 9-Stage pipeline grid ── */
   const stageCards = (
-    <div className="card-foot border-t border-black/10 bg-black/[0.015] p-4">
+    <div className="stage-grid-wrap card-foot border-t border-black/10 bg-black/[0.015] p-4">
       <div className="mb-3 flex items-center justify-between">
         <p className="text-[11px] font-bold uppercase tracking-[0.15em] text-black/60 font-mono">
           Stage Verification Pipeline

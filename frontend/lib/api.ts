@@ -29,9 +29,51 @@ class ApiError extends Error {
 const BACKEND_HINT = "Make sure the backend is running: cd backend && npm run dev";
 
 /**
+ * Best-effort read of `{ error: "…" }` from a failed response, so the user sees
+ * the backend's reason instead of a bare status line. Returns null when the body
+ * is missing or not JSON (e.g. a proxy's HTML error page).
+ */
+async function readErrorDetail(res: Response): Promise<string | null> {
+  try {
+    const body: unknown = await res.json();
+    if (body && typeof body === "object") {
+      const err = (body as { error?: unknown }).error;
+      if (typeof err === "string" && err.trim()) return err.trim();
+    }
+  } catch {
+    // not JSON — fall through
+  }
+  return null;
+}
+
+/** Collapse a raw backend message so it stays readable on a small error card. */
+function tidyDetail(detail: string): string {
+  const flat = detail.replace(/\s+/g, " ").trim();
+  return flat.length > 180 ? `${flat.slice(0, 177)}…` : flat;
+}
+
+/**
+ * User-facing message for a non-2xx response.
+ * Never shows the raw status line ("The backend responded with 500 Internal
+ * Server Error"): a 5xx is phrased as a retryable problem, and the backend's own
+ * reason is appended only when it is short enough to be useful.
+ */
+function httpErrorMessage(status: number, detail: string | null): string {
+  if (detail) {
+    const reason = tidyDetail(detail);
+    if (status >= 500) return `The server could not complete the request — ${reason}`;
+    return reason;
+  }
+  if (status === 404) return "This item is no longer waiting for a decision.";
+  if (status === 400) return "The request was rejected as invalid.";
+  if (status >= 500) return "The server hit an unexpected problem. Please try again.";
+  return `The request failed (HTTP ${status}).`;
+}
+
+/**
  * fetch JSON with error messages that can be shown to the user.
  * - network failure → suggests checking the backend
- * - non-2xx status  → the HTTP status
+ * - non-2xx status  → the backend's own reason, or a friendly fallback
  * - not JSON        → invalid response
  */
 export async function fetchJson<T = unknown>(
@@ -49,10 +91,8 @@ export async function fetchJson<T = unknown>(
   }
 
   if (!res.ok) {
-    throw new ApiError(
-      `The backend responded with ${res.status} ${res.statusText || ""}`.trim(),
-      "http"
-    );
+    const detail = await readErrorDetail(res);
+    throw new ApiError(httpErrorMessage(res.status, detail), "http");
   }
 
   try {

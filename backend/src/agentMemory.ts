@@ -1,4 +1,37 @@
 import { db } from "./db.js";
+import { config } from "./config.js";
+
+/**
+ * Hard rules whose REJECT means "we positively identified this address as malicious".
+ *
+ * This list is the difference between a REJECT that is evidence and a REJECT that is
+ * an incident: rules 2, 6 and 7 used to reject on *shape* (new account, contract
+ * receiver, zero balance) and were downgraded to LLM signals, so they are deliberately
+ * absent here. A `triggered_rule` outside this set — or no rule at all — is not a
+ * malicious confirmation, no matter how final the row looks.
+ */
+export const CONFIRMED_MALICIOUS_TRIGGER_RULES: readonly string[] = [
+  "RULE_1_GOPLUS_MALICIOUS",
+  "RULE_1B_GOPLUS_MALICIOUS_NO_FLAGS",
+  "RULE_8_GOPLUS_PHISHING_FLAGS",
+  "RULE_12_LOCAL_DENYLIST",
+  "RULE_15_EIP7702_MALICIOUS_DELEGATE",
+];
+
+/**
+ * `decided_by` values that mean a human said no.
+ *
+ * `human_veto` is what the human-facing code writes for a declined escrow and `human`
+ * is what `finalizeHumanDecision` writes; both are accepted because a human veto is a
+ * human veto regardless of which path produced it.
+ */
+const HUMAN_DECIDERS: readonly string[] = ["human", "human_veto"];
+
+/** `decided_by` value written by the GoPlus hard override. */
+const OVERRIDE_DECIDER = "override_malicious";
+
+/** `triggered_rule` prefix written by the GoPlus hard override (recipient or sender). */
+const OVERRIDE_RULE_PREFIX = "OVERRIDE_GOPLUS_MALICIOUS";
 
 export interface AddressMemory {
   /** Finalized escrows where this address was the recipient. */
@@ -25,6 +58,20 @@ export interface AddressMemory {
   hadHardRuleReject: boolean;
   /** How many times it was rejected by a human operator specifically. */
   humanRejections: number;
+  /**
+   * Rejections that POSITIVELY identified this address as malicious: a hard rule from
+   * {@link CONFIRMED_MALICIOUS_TRIGGER_RULES}, the GoPlus override, or a human veto.
+   *
+   * Deliberately narrower than `hadHardRuleReject`, which is what the prompt warning
+   * uses. The difference is the whole point: a `fail_safe` row (the judge was not
+   * confident enough), an LLM-only rejection and the now-downgraded shape rules (2/6/7)
+   * are all *rejections without evidence of malice*. Counting them here would let a
+   * single network outage — or one unconfident hearing — blacklist an address forever,
+   * which is the exact failure mode `hadHardRuleReject` was already burned for.
+   */
+  confirmedMaliciousRejects: number;
+  /** Which rule(s) produced those confirmed rejections, for the audit trail. */
+  confirmedMaliciousRules: string[];
   /** Escrows still waiting for a human vote — NOT counted as verdicts yet. */
   pendingHuman: number;
   firstSeenAt: string | null;
@@ -89,6 +136,8 @@ export function getAddressMemory(address: string): AddressMemory {
       seenRiskFlags: [],
       hadHardRuleReject: false,
       humanRejections: 0,
+      confirmedMaliciousRejects: 0,
+      confirmedMaliciousRules: [],
       pendingHuman,
       firstSeenAt: null,
       lastSeenAt: null,
@@ -130,6 +179,8 @@ export function getAddressMemory(address: string): AddressMemory {
 
   const humanRejections = strongRow?.humanRej ?? 0;
   const hadHardRuleReject = (strongRow?.automated ?? 0) > 0 || humanRejections > 0;
+
+  const confirmed = countConfirmedMaliciousRejects(addr);
 
   const flagRows = db
     .prepare(
@@ -173,6 +224,8 @@ export function getAddressMemory(address: string): AddressMemory {
     seenRiskFlags,
     hadHardRuleReject,
     humanRejections,
+    confirmedMaliciousRejects: confirmed.count,
+    confirmedMaliciousRules: confirmed.rules,
     pendingHuman,
     firstSeenAt: agg.firstSeenAt,
     lastSeenAt: agg.lastSeenAt,
@@ -185,6 +238,118 @@ export function getAddressMemory(address: string): AddressMemory {
       createdAt: r.created_at,
     })),
   };
+}
+
+/**
+ * Pull the rule-engine verdict out of a stored transcript.
+ *
+ * `triggered_rule` is persisted INSIDE the transcript JSON (`ruleEngine.triggeredRule`)
+ * rather than as its own column. That is a deliberate choice, not a shortcut: `db.ts`
+ * creates the `decisions` table at import time, so adding a column would ALTER the
+ * production `aegis.db` the first time any process touches it, and a migration that
+ * silently rewrites the decision audit trail the moment a backend starts is not
+ * something to add for one convenience field.
+ */
+export function readRuleContext(transcript: unknown): {
+  triggeredRule: string | null;
+  signals: string[];
+} {
+  if (transcript === null || typeof transcript !== "object") {
+    return { triggeredRule: null, signals: [] };
+  }
+  const ruleEngine = (transcript as Record<string, unknown>).ruleEngine;
+  if (ruleEngine === null || typeof ruleEngine !== "object") {
+    return { triggeredRule: null, signals: [] };
+  }
+  const rec = ruleEngine as Record<string, unknown>;
+  const triggeredRule =
+    typeof rec.triggeredRule === "string" && rec.triggeredRule.trim() !== ""
+      ? rec.triggeredRule
+      : null;
+  const signals: string[] = [];
+  if (Array.isArray(rec.signals)) {
+    for (const s of rec.signals) {
+      if (s !== null && typeof s === "object" && typeof (s as { rule?: unknown }).rule === "string") {
+        signals.push((s as { rule: string }).rule);
+      }
+    }
+  }
+  return { triggeredRule, signals };
+}
+
+/**
+ * Rejections of `recipient` that are *evidence of malice*, and nothing else.
+ *
+ * Counted:
+ *   - `decided_by = 'hard_rule'` with a `triggered_rule` in
+ *     {@link CONFIRMED_MALICIOUS_TRIGGER_RULES};
+ *   - `decided_by = 'override_malicious'`, and the equivalent hard_rule rows whose rule
+ *     is the GoPlus override (both spellings exist in the codebase, and both mean the
+ *     same thing: GoPlus said malicious and the debate was overruled);
+ *   - a HUMAN rejection (`decided_by` human/human_veto with `eligible = 0`), because a
+ *     person looking at the case is itself a positive finding.
+ *
+ * NOT counted — the exclusions are the feature:
+ *   - `fail_safe`: "the judge could not analyse this", not "this is malicious". One
+ *     Ollama hiccup must never blacklist an address permanently.
+ *   - LLM-only rejections: a model opinion with no rule behind it.
+ *   - the downgraded shape rules (2/6/7), which reject without evidence of malice.
+ *   - `pending_human` rows: a recommendation is not a verdict.
+ */
+function countConfirmedMaliciousRejects(recipient: string): {
+  count: number;
+  rules: string[];
+} {
+  const rows = db
+    .prepare(
+      "SELECT decided_by, human_vote, debate FROM decisions " +
+      "WHERE LOWER(recipient) = ? AND status = 'final' AND eligible = 0"
+    )
+    .all(recipient) as Array<{
+    decided_by: string | null;
+    human_vote: number | null;
+    debate: string | null;
+  }>;
+
+  const rules: string[] = [];
+  let count = 0;
+
+  for (const row of rows) {
+    const decider = (row.decided_by ?? "").toLowerCase();
+
+    if (HUMAN_DECIDERS.includes(decider)) {
+      count += 1;
+      rules.push("human_veto");
+      continue;
+    }
+    if (decider === OVERRIDE_DECIDER) {
+      count += 1;
+      rules.push("OVERRIDE_GOPLUS_MALICIOUS");
+      continue;
+    }
+    if (decider !== "hard_rule") continue;
+
+    let triggeredRule: string | null = null;
+    if (row.debate !== null) {
+      try {
+        triggeredRule = readRuleContext(JSON.parse(row.debate) as unknown).triggeredRule;
+      } catch {
+        triggeredRule = null;
+      }
+    }
+    // No recorded rule = no evidence. Never infer one from `decided_by`.
+    if (triggeredRule === null) continue;
+
+    const isMaliciousRule =
+      CONFIRMED_MALICIOUS_TRIGGER_RULES.includes(triggeredRule) ||
+      triggeredRule.startsWith(OVERRIDE_RULE_PREFIX);
+    if (isMaliciousRule) {
+      count += 1;
+      rules.push(triggeredRule);
+    }
+  }
+
+  return { count, rules: Array.from(new Set(rules)) };
 }
 
 /**
@@ -298,8 +463,82 @@ export interface SenderMemory {
   distinctRecipients: number;
   /** Recipients this sender was REJECTED for — a strong repeat-offender signal. */
   rejectedRecipients: string[];
+  /**
+   * Escrows this sender opened inside the burst window
+   * (`SENDER_BURST_WINDOW_MIN`, default 10 min).
+   *
+   * `pending_human` rows are INCLUDED on purpose: a burst of escrows still awaiting a
+   * verdict is exactly what a compromised key produces, and counting only finalized
+   * rows would hide the drain until the drain had finished.
+   */
+  recentEscrowCount: number;
   pendingHuman: number;
   lastSentAt: string | null;
+}
+
+/**
+ * Recipients this sender has paid before — the input for address-poisoning detection.
+ *
+ * DISTINCT and lowercased, and this sender ONLY: a lookalike of somebody else's
+ * counterparty is not evidence against this transfer, and one repeated row must not
+ * look like several.
+ *
+ * Bounded by `limit` on purpose — this is a UI/LLM context list, and the address-poison
+ * rule compares the recipient against it, so the recent few hundred cover every
+ * address a user could plausibly still confuse with a real one.
+ *
+ * The AEGIS vault event log would extend this to on-chain escrows that never reached
+ * this database, but that is an `eth_getLogs` walk costing tens of chunked round-trips
+ * per escrow; the DB half is the cheap half and is what the rule uses.
+ */
+export function getSenderCounterparties(
+  sender: string,
+  limit: number = 500
+): string[] {
+  const addr = sender.toLowerCase();
+  // GROUP BY, not DISTINCT: the most-recent-first ordering needs MAX(created_at), and
+  // an aggregate in the ORDER BY of a `SELECT DISTINCT` is a SQLITE_ERROR
+  // ("misuse of aggregate") rather than a working sort.
+  const rows = db
+    .prepare(
+      "SELECT LOWER(recipient) AS r FROM decisions " +
+        "WHERE LOWER(sender) = ? " +
+        "GROUP BY LOWER(recipient) " +
+        "ORDER BY MAX(created_at) DESC, MAX(id) DESC LIMIT ?"
+    )
+    .all(addr, Math.max(1, Math.floor(limit))) as Array<{ r: string }>;
+  return rows.map((r) => r.r).filter((r) => typeof r === "string" && r !== "");
+}
+
+/**
+ * Count the escrows one sender opened at or after `sinceIso`.
+ *
+ * `sinceIso` must be a timestamp SQLite can compare against `created_at`, i.e.
+ * `YYYY-MM-DD HH:MM:SS` in UTC (which is what `CURRENT_TIMESTAMP` writes).
+ */
+export function countRecentEscrowsBySender(sender: string, sinceIso: string): number {
+  const row = db
+    .prepare(
+      "SELECT COUNT(*) AS n FROM decisions " +
+      "WHERE LOWER(sender) = ? AND created_at >= ?"
+    )
+    .get(sender.toLowerCase(), sinceIso) as { n: number } | undefined;
+  return row?.n ?? 0;
+}
+
+/**
+ * SQLite's `CURRENT_TIMESTAMP` format, N minutes ago.
+ *
+ * `created_at` is written by SQLite, so the window boundary must be produced in the
+ * SAME format — comparing an ISO string with a `T` separator against
+ * "YYYY-MM-DD HH:MM:SS" orders lexicographically and the window silently includes
+ * (or excludes) the wrong rows.
+ */
+function minutesAgoSql(minutes: number): string {
+  return new Date(Date.now() - minutes * 60_000)
+    .toISOString()
+    .slice(0, 19)
+    .replace("T", " ");
 }
 
 /**
@@ -349,6 +588,11 @@ export function getSenderMemory(address: string): SenderMemory {
       .all(addr) as { r: string }[]
   ).map((x) => x.r);
 
+  const recentEscrowCount = countRecentEscrowsBySender(
+    addr,
+    minutesAgoSql(config.SENDER_BURST_WINDOW_MIN)
+  );
+
   return {
     totalSent: agg?.totalSent ?? 0,
     approved: agg?.approved ?? 0,
@@ -356,6 +600,7 @@ export function getSenderMemory(address: string): SenderMemory {
     strongRejections: agg?.strongRejections ?? 0,
     distinctRecipients: agg?.distinctRecipients ?? 0,
     rejectedRecipients,
+    recentEscrowCount,
     pendingHuman: pendingRow?.n ?? 0,
     lastSentAt: agg?.lastSentAt ?? null,
   };

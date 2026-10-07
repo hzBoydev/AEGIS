@@ -7,7 +7,9 @@
     "dev": "tsx watch index.ts",
     "start": "tsx index.ts",
     "redteam": "tsx src/redTeam.ts",
-    "typecheck": "tsc --noEmit"
+    "test": "node --import tsx --import ./src/testSetup.ts --test src/**/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "clean-test-rows": "tsx scripts/cleanTestRows.ts"
   },
   "license": "ISC",
   "dependencies": {

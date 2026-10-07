@@ -38,9 +38,8 @@ interface HumanQueueEnvelope {
 interface VoteEnvelope {
   success: boolean;
   data?: {
-    escrowId: string;
-    decision: string;
     txHash: string;
+    approve: boolean;
   };
   error?: string;
 }

@@ -175,14 +175,6 @@ body {
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.05);
 }
 
-.step-num {
-  font-family: var(--font-display), monospace;
-  font-size: 0.75rem;
-  font-weight: 700;
-  letter-spacing: 0.1em;
-  color: var(--text-muted);
-}
-
 /* ── Badges & Status ────────────────────────────────────── */
 
 .badge {
@@ -263,14 +255,6 @@ body {
   color: var(--danger);
 }
 
-.text-safe {
-  color: var(--safe);
-}
-
-.text-bronze {
-  color: var(--bronze);
-}
-
 /* ── Form Inputs ─────────────────────────────────────────── */
 
 .field {
@@ -313,23 +297,6 @@ body {
   transition: all 0.25s cubic-bezier(0.2, 0.8, 0.2, 1);
   cursor: pointer;
   border: 1px solid transparent;
-}
-
-.btn-primary, .btn-bronze {
-  background: #111111;
-  color: #ffffff;
-  border-color: rgba(255, 255, 255, 0.18);
-  box-shadow: 0 8px 24px -4px rgba(0, 0, 0, 0.25);
-}
-
-.btn-primary:hover, .btn-bronze:hover {
-  background: #000000;
-  transform: translateY(-2px);
-  box-shadow: 0 14px 32px -4px rgba(0, 0, 0, 0.35);
-}
-
-.btn-primary:active, .btn-bronze:active {
-  transform: translateY(0);
 }
 
 .btn-secondary {
@@ -382,11 +349,6 @@ body {
 .btn-sm {
   padding: 0.45rem 0.95rem;
   font-size: 0.78rem;
-}
-
-.btn-lg {
-  padding: 0.95rem 2rem;
-  font-size: 1rem;
 }
 
 .icon-btn {
@@ -448,19 +410,36 @@ body {
 
 .stage-card-grid {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.65rem;
 }
 
 @media (min-width: 640px) {
   .stage-card-grid {
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 
-@media (min-width: 1024px) {
+/* The pipeline row is driven by the container's own width (inline section or
+   the wide Live Verification Monitor popup), not the viewport, so stages 1-9
+   stay in a single row whenever there is room for them. */
+.stage-grid-wrap {
+  container-type: inline-size;
+}
+
+@container (min-width: 900px) {
   .stage-card-grid {
-    grid-template-columns: repeat(9, 1fr);
+    grid-template-columns: repeat(9, minmax(0, 1fr));
+  }
+
+  .stage-card {
+    padding: 0.7rem 0.6rem;
+  }
+}
+
+@container (min-width: 560px) and (max-width: 899.98px) {
+  .stage-card-grid {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
   }
 }
 
@@ -591,16 +570,6 @@ body {
   animation: float-gentle 5s ease-in-out infinite;
 }
 
-@keyframes pulse-ring {
-  0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(30, 112, 74, 0.6); }
-  70% { transform: scale(1); box-shadow: 0 0 0 8px rgba(30, 112, 74, 0); }
-  100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(30, 112, 74, 0); }
-}
-
-.pulse-active {
-  animation: pulse-ring 2s infinite cubic-bezier(0.4, 0, 0.6, 1);
-}
-
 /* ── Section Blocks & Reveal ─────────────────────────────── */
 
 .section-block {
@@ -668,6 +637,25 @@ body {
   border-radius: 22px;
   box-shadow: 0 40px 90px -20px rgba(0, 0, 0, 0.5);
   animation: modal-in 0.35s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Live Verification Monitor: wide panel so all 9 stages sit in one row.
+   The panel must be a flex column — as a block box with `overflow: hidden`
+   the .modal-scroll child grew to its full content height and was simply
+   clipped, so the stage grid under "Final Result" was unreachable. */
+.modal-panel {
+  display: flex;
+  flex-direction: column;
+  max-width: 92rem;
+  max-height: min(70rem, calc(100dvh - 2.5rem));
+}
+
+.modal-panel > * {
+  flex: 0 0 auto;
+}
+
+.modal-panel > .modal-scroll {
+  flex: 1 1 auto;
 }
 
 .modal-scroll {

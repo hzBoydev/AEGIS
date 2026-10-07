@@ -65,6 +65,8 @@ function checkSimulatedMalicious(address: string): SecurityCheckResult | null {
   return {
     status: "malicious",
     riskFlags: ["simulated_demo_flag"],
+    hardFlags: ["simulated_demo_flag"],
+    softFlags: [],
     source: "goplus",
     simulated: true,
     rawData: {
@@ -78,14 +80,31 @@ function checkSimulatedMalicious(address: string): SecurityCheckResult | null {
 // ── Types ─────────────────────────────────────────────────────────────────────
 export interface SecurityCheckResult {
   /**
-   * "clean"       – GoPlus returned no malicious signals
-   * "malicious"   – GoPlus flagged this address
+   * "clean"       – GoPlus returned no HARD malicious signals
+   * "malicious"   – GoPlus flagged this address with at least one hard flag
    * "unavailable" – API timeout / error / invalid response
    *
    * IMPORTANT: "unavailable" !== "clean". Never treat API failure as safe.
+   *
+   * IMPORTANT 2: "clean" !== "no flags". A SOFT-only result (see `softFlags`)
+   * is reported as "clean" + `softFlags`, never as "malicious": `blacklist_doubt`
+   * means *suspected but unconfirmed*, and hard-REJECTing on it was one of the
+   * false-positive sources this engine is being hardened against.
    */
   status: "clean" | "malicious" | "unavailable";
+  /** Union of hard + soft flags. Kept as one list so memory/UI stay compatible. */
   riskFlags: string[];
+  /**
+   * Flags that mean "this address is malicious". Present ⟺ `status === "malicious"`
+   * (the demo simulation included). Only these can drive a hard REJECT.
+   */
+  hardFlags: string[];
+  /**
+   * Flags that mean "worth a second look, not a verdict": suspected-but-unconfirmed
+   * (`blacklist_doubt`), gas-token spam (`gas_abuse`), mining abuse. They inform
+   * the LLM (rule 17) and never reject on their own.
+   */
+  softFlags: string[];
   source: "goplus" | "unavailable";
   rawData?: Record<string, unknown>;
   /**
@@ -136,32 +155,63 @@ interface GoPlusResponse {
 }
 
 /**
- * Flags that count as a clear malicious signal when set to "1" / 1.
+ * Flags that ARE a malicious verdict when set to "1" / 1.
+ *
+ * The split from SOFT_FLAGS is the single most important change in this file: a
+ * hard REJECT must rest on a positively observed fact, and "suspected" / "spam"
+ * are not facts about theft. Every entry below is an assertion that the address
+ * itself is a thief, a drainer, a sanctioned party or an illegal finance
+ * facilitator — including "number_of_malicious_contracts_created" and "reinit",
+ * which are only returned for an address with a real malicious track record.
  */
-const MALICIOUS_FLAGS: (keyof GoPlusAddressResult)[] = [
+export const HARD_FLAGS: (keyof GoPlusAddressResult)[] = [
   "is_blacklisted",
   "malicious_address",
   "phishing_activities",
-  "blacklist_doubt",
   "honeypot_related_address",
   "fake_token",
   "stealing_attack",
-  "mixer",
-  "darkweb_transactions",
   "sanctioned",
-  "gas_abuse",
-  // Additional flags from GoPlus /address_security/ endpoint
+  "darkweb_transactions",
   "blackmail_activities",
   "cybercrime",
   "financial_crime",
   "money_laundering",
   "fake_kyc",
-  "malicious_mining_activities",
   // Live-verified fields: an address credited with deploying malicious
   // contracts, or with a reinit/clone of a known interface, is not clean.
   "number_of_malicious_contracts_created",
   "reinit",
   "fake_standard_interface",
+  "mixer",
+];
+
+/**
+ * Flags that are NOT a verdict: they escalate attention, they do not convict.
+ *
+ *  - `blacklist_doubt`          GoPlus itself says "suspected, unconfirmed".
+ *  - `gas_abuse`                gas-token / spam spammer behaviour, no theft.
+ *  - `malicious_mining_activities`  mining abuse, unrelated to escrow theft.
+ *
+ * These produce rule 17 (NEEDS_LLM) instead of a hard REJECT. Folding them into
+ * the hard set is what made a wallet that merely received spam get blocked.
+ */
+export const SOFT_FLAGS: (keyof GoPlusAddressResult)[] = [
+  "blacklist_doubt",
+  "gas_abuse",
+  "malicious_mining_activities",
+];
+
+/**
+ * Every flag this checker extracts, hard and soft together.
+ *
+ * Kept for two reasons: `riskFlags` stays a single list so the DB, the memory
+ * block and the UI do not need to change, and `KNOWN_FLAG_KEYS` needs the union
+ * to recognise a flat GoPlus response.
+ */
+const MALICIOUS_FLAGS: (keyof GoPlusAddressResult)[] = [
+  ...HARD_FLAGS,
+  ...SOFT_FLAGS,
 ];
 
 /**
@@ -172,6 +222,23 @@ const KNOWN_FLAG_KEYS = new Set(MALICIOUS_FLAGS as string[]);
 
 function isFlagSet(value: unknown): boolean {
   return value === "1" || value === 1 || value === true;
+}
+
+/**
+ * Split the extracted flags into the two verdicts.
+ *
+ * A flag GoPlus returns that this build does not know about lands in
+ * `riskFlags` (so it is still shown to the LLM) but in NEITHER list — an unknown
+ * key must not be silently promoted into a hard REJECT, and must not be
+ * silently dropped either.
+ */
+function classifyFlags(flags: string[]): { hardFlags: string[]; softFlags: string[] } {
+  const hardSet = new Set<string>(HARD_FLAGS as string[]);
+  const softSet = new Set<string>(SOFT_FLAGS as string[]);
+  return {
+    hardFlags: flags.filter((f) => hardSet.has(f)),
+    softFlags: flags.filter((f) => softSet.has(f)),
+  };
 }
 
 function extractRiskFlags(result: GoPlusAddressResult): string[] {
@@ -292,6 +359,10 @@ async function queryChain(
  *     is never presented as a full clean bill of health)
  *   - every chain failed          → "unavailable"  (NOT clean)
  *
+ * The verdict itself is HARD-flag based: `status === "malicious"` requires at
+ * least one HARD_FLAGS entry. Soft-only results stay "clean" with `softFlags`
+ * populated, so they reach rule 17 (LLM context) instead of a hard REJECT.
+ *
  * @param address  EVM address (0x...)
  */
 export async function checkAddressSecurity(
@@ -348,18 +419,22 @@ export async function checkAddressSecurity(
   }
 
   const riskFlags = Array.from(merged);
+  const { hardFlags, softFlags } = classifyFlags(riskFlags);
   mergedRaw._byChain = rawByChain;
 
   if (failedChains.length > 0) {
     console.warn(
       `[GoPlus] PARTIAL coverage for ${address}: chain(s) ${failedChains.join(", ")} unreachable, ` +
-        `${queriedChains.join(", ")} answered. Treating as ${riskFlags.length > 0 ? "malicious" : "clean (partial)"}.`
+        `${queriedChains.join(", ")} answered. Treating as ${hardFlags.length > 0 ? "malicious" : "clean (partial)"}.`
     );
   }
 
   return {
-    status: riskFlags.length > 0 ? "malicious" : "clean",
+    // Hard flags only. A soft-only result is NOT malicious — see SOFT_FLAGS.
+    status: hardFlags.length > 0 ? "malicious" : "clean",
     riskFlags,
+    hardFlags,
+    softFlags,
     source: "goplus",
     rawData: mergedRaw,
     flaggedChains: flaggedChains.length > 0 ? flaggedChains : undefined,
@@ -369,5 +444,23 @@ export async function checkAddressSecurity(
 }
 
 function unavailable(): SecurityCheckResult {
-  return { status: "unavailable", riskFlags: [], source: "unavailable" };
+  return {
+    status: "unavailable",
+    riskFlags: [],
+    hardFlags: [],
+    softFlags: [],
+    source: "unavailable",
+  };
+}
+
+/**
+ * The canonical "GoPlus did not answer" result, for callers that have to synthesise one.
+ *
+ * Exported so the pipeline's error path cannot drift from the one inside this module: a
+ * hand-written literal that forgot `hardFlags` would be a `SecurityCheckResult` with
+ * `status: "unavailable"` and no hard flags — which is what the rules require, but only
+ * by accident, and only until the next field is added.
+ */
+export function unavailableSecurity(): SecurityCheckResult {
+  return unavailable();
 }

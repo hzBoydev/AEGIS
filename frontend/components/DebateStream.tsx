@@ -13,6 +13,7 @@ export interface StreamEvent {
     | "rules"
     | "investigator"
     | "tools"
+    | "agent_step"
     | "advocate"
     | "judge"
     | "final"
@@ -30,6 +31,11 @@ export const PHASE_META: Record<StreamEvent["phase"], { title: string; tint: str
   rules: { title: "Rules", tint: "var(--bronze)" },
   investigator: { title: "Investigation", tint: "var(--text-primary)" },
   tools: { title: "Tool Calling", tint: "var(--text-primary)" },
+  // One event per LLM turn of an agent (tool request, or the final verdict).
+  // Not in PHASE_ORDER: it interleaves with the phases above rather than being a
+  // stage of its own, so folding these into a single column would misrepresent the
+  // sequence. Rendered inline as sub-rows under the agent they belong to.
+  agent_step: { title: "Agent Step", tint: "var(--text-secondary)" },
   advocate: { title: "Advocacy", tint: "var(--text-secondary)" },
   judge: { title: "Verdict", tint: "var(--safe)" },
   final: { title: "Final Result", tint: "var(--text-primary)" },

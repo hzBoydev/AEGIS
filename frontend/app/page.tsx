@@ -1,8 +1,9 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useAccount } from "wagmi";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
+import Image from "next/image";
 import Hero from "@/components/Hero";
 import SendForm from "@/components/SendForm";
 import LiveDebate from "@/components/LiveDebate";
@@ -136,7 +137,8 @@ export default function Home() {
           <header className="site-header">
             <div className="shell flex flex-wrap items-center justify-between gap-x-4 gap-y-2 py-3.5 md:h-20 md:flex-nowrap md:py-0">
               <div className="flex shrink-0 items-center gap-3">
-                <a href="#" className="flex items-center group">
+                <a href="#" className="flex items-center gap-2 group">
+                  <Image src="/logo.png" alt="AEGIS" width={56} height={56} className="h-14 w-14 object-contain" />
                   <span className="font-display text-2xl font-bold tracking-tight text-ink">
                     AEGIS
                   </span>

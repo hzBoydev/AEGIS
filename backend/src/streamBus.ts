@@ -7,6 +7,7 @@ export type StreamPhase =
   | "rules"
   | "investigator"
   | "tools"
+  | "agent_step"
   | "advocate"
   | "judge"
   | "final"

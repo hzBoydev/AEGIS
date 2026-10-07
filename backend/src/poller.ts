@@ -2,8 +2,9 @@ import { formatEther } from "viem";
 import { bscTestnet } from "viem/chains";
 import { publicClient, walletClient, config, account } from "./config.js";
 import { AEGIS_VAULT_ABI } from "./abi.js";
-import { runSecurityPipeline } from "./securityPipeline.js";
-import { warmupOllama } from "./aiAnalyzer.js";
+import { runSecurityPipeline, type FinalDecision } from "./securityPipeline.js";
+import { warmupOllama, type DebateTranscript } from "./aiAnalyzer.js";
+import type { RuleEngineContext } from "./ruleEngine.js";
 import {
   saveDecision,
   getDecisionByEscrowId,
@@ -11,6 +12,7 @@ import {
   finalizeHumanDecision,
 } from "./db.js";
 import { publish } from "./streamBus.js";
+import { writeCorrectionLesson } from "./lessonWriter.js";
 
 const contractAddress = config.CONTRACT_ADDRESS;
 
@@ -167,6 +169,43 @@ async function readEscrowTimeoutSec(): Promise<number | null> {
     escrowTimeoutSecCache = null;
   }
   return escrowTimeoutSecCache;
+}
+
+// ── Rule-only transcript (for decisions that never reach a debate) ────────────
+/**
+ * A minimal, honest transcript for a decision that the rule engine ended on its own.
+ *
+ * The hard-REJECT path calls the LLM only to phrase an explanation, so `decision.debate`
+ * is undefined there and the transcript would be stored as NULL. That is not cosmetic:
+ * `getAddressMemory` reads the rule id out of the transcript to decide whether a past
+ * REJECT was a *confirmed* malicious finding (GoPlus flag, denylist hit, malicious
+ * delegate) or a mere fail-safe. Losing the rule id would force it to guess, and the
+ * guess it used to make — "decided_by = hard_rule means confirmed" — is exactly how a
+ * single outage becomes a permanent blacklist.
+ *
+ * `investigator` / `judge` are present (with `reason` carrying the rule text) because
+ * the transcript type is the audit record for every AEGIS decision, and a record with
+ * holes in it is harder to read than one that is explicitly marked as rule-only.
+ */
+function ruleOnlyTranscript(decision: FinalDecision): DebateTranscript {
+  const ruleEngine: RuleEngineContext = decision.ruleEngine ?? {
+    decision: "REJECT",
+    triggeredRule: decision.triggeredRule ?? "UNKNOWN_RULE",
+    signals: [],
+  };
+  const stamp = {
+    eligible: false,
+    confidence: decision.confidence,
+    riskLevel: decision.riskLevel,
+    reason: decision.reason,
+  };
+  return {
+    investigator: stamp,
+    advocate: null,
+    judge: stamp,
+    leanSplitSource: "investigator",
+    ruleEngine,
+  };
 }
 
 // ── Core: process a single escrow by ID ──────────────────────────────────────
@@ -336,7 +375,9 @@ async function processEscrow(
         decidedBy: "human_review",
         riskFlags: decision.evidence.security.riskFlags,
         toolsUsed: decision.toolsUsed,
-        debate: decision.debate,
+        // The HOLD path runs no debate, so the rule verdict has to be attached here or
+        // the transcript is empty and the escalation cannot be audited later.
+        debate: decision.debate ?? ruleOnlyTranscript(decision),
         status: "pending_human",
         ...(decision.humanReason !== undefined
           ? { humanReason: decision.humanReason }
@@ -364,7 +405,10 @@ async function processEscrow(
       riskFlags: decision.evidence.security.riskFlags,
       txHash,
       toolsUsed: decision.toolsUsed,
-      debate: decision.debate,
+      // `ruleOnlyTranscript` covers the hard-REJECT path, which by design runs no
+      // debate: without it a `decided_by = 'hard_rule'` row would be stored with an
+      // empty transcript and the rule id would be lost for good.
+      debate: decision.debate ?? ruleOnlyTranscript(decision),
       status: "final",
     });
 
@@ -502,6 +546,42 @@ export async function applyHumanVote(
     detail: txHash,
     data: { txHash },
   });
+
+  // ── Ground-truth lesson ─────────────────────────────────────────────────────
+  // A human vote is the one correction in this system that is unambiguously
+  // ground truth: a person saw the case and disagreed with the AI. When they
+  // AGREE there is nothing to learn, so no lesson is written.
+  //
+  // Fire-and-forget and post-decision on purpose: the funds have already moved,
+  // the DB row is final, so `writeCorrectionLesson` swallows its own errors AND
+  // this block is guarded — no bookkeeping failure may escape and turn a
+  // successful vote into an HTTP 500 in the operator's browser.
+  if (config.AGENT_LESSONS_ENABLED) {
+    try {
+      // `decisions.amount` is stored in BNB (the poller writes `amountBNB.toString()`),
+      // already the unit the lesson text quotes. The old `BigInt(row.amount)` threw
+      // SyntaxError on any non-integer value ("0.001") — after the on-chain write —
+      // which made every human vote answer 500.
+      const amountBNB = Number(row.amount);
+      void writeCorrectionLesson({
+        escrowId,
+        sender: row.sender,
+        recipient: row.recipient,
+        amountBNB: Number.isFinite(amountBNB) ? amountBNB : 0,
+        aiRecommended: row.eligible === 1,
+        actualReleased: approve,
+        aiReason: row.reasoning,
+        correctionDetail: row.human_reason ?? "operator overrode the AI recommendation",
+        source: "human_veto",
+      }).catch(() => undefined);
+    } catch (err) {
+      console.warn(
+        `[Lessons] Skipped the lesson for ${escrowId}: ${
+          err instanceof Error ? err.message : err
+        } (non-fatal — the vote stands).`
+      );
+    }
+  }
 
   return { txHash };
 }

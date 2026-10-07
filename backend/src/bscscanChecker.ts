@@ -43,6 +43,17 @@ export interface OnChainIntel {
    * purpose of "is this a contract", but worth showing in the evidence.
    */
   eip7702Delegated: boolean;
+  /**
+   * The delegate CONTRACT an EIP-7702 recipient executes its code from, when it is
+   * delegated. null otherwise (including a plain EOA and a real contract).
+   *
+   * This address is where the account has actually been hijacked to: a sweeper
+   * delegation points every transfer this EOA receives straight at the attacker's
+   * code. So the delegate — not the EOA — is what must be screened, which is why it
+   * is a first-class field here instead of being re-derived from the raw bytecode in
+   * the pipeline.
+   */
+  delegateAddress: `0x${string}` | null;
   /** BNB balance. null if unavailable. */
   balanceBNB: number | null;
   /** True if BOTH the explorer and RPC failed to return any data. */
@@ -100,19 +111,30 @@ export type NoveltyLevel = "novel" | "barelyUsed" | "established" | "unknown";
  *                        rule reject normal wallets;
  *   - anything else    → a real contract.
  *
+ * The delegate address is returned for the middle case (see `OnChainIntel.
+ * delegateAddress`): a 7702 delegation is the standard way a real wallet gets
+ * hijacked by a sweeper, so the delegate has to be screened.
+ *
  * Exported so the red-team suite can pin this behaviour without an RPC call.
  */
 export function classifyCode(code: string | undefined | null): {
   isContract: boolean;
   eip7702Delegated: boolean;
+  delegateAddress: `0x${string}` | null;
 } {
-  if (!code || code === "0x") return { isContract: false, eip7702Delegated: false };
+  if (!code || code === "0x") {
+    return { isContract: false, eip7702Delegated: false, delegateAddress: null };
+  }
   const hex = code.toLowerCase();
   // 23 bytes of code = "0x" + 46 hex chars (3-byte designator + 20-byte address).
   if (hex.length === 2 + 46 && hex.startsWith("0xef0100")) {
-    return { isContract: false, eip7702Delegated: true };
+    return {
+      isContract: false,
+      eip7702Delegated: true,
+      delegateAddress: `0x${hex.slice(2 + 6)}` as `0x${string}`,
+    };
   }
-  return { isContract: true, eip7702Delegated: false };
+  return { isContract: true, eip7702Delegated: false, delegateAddress: null };
 }
 
 // ── BscScan response shapes ───────────────────────────────────────────────────
@@ -670,6 +692,234 @@ export async function getVaultActivity(address: string): Promise<VaultActivity> 
   }
 }
 
+// ── Cheap RPC intel (tool: get_address_onchain_intel) ─────────────────────────
+/**
+ * Minimal on-chain facts for ANY in-scope address: nonce, balance and code.
+ *
+ * Deliberately cheaper than `getOnChainIntel`: no explorer call, and above all
+ * no `eth_getLogs` vault scan (that scan costs ~50 chunked round-trips and is
+ * already memoised for the two escrow endpoints — running it again for every
+ * counterparty the agent decides to inspect would blow the escrow's time budget
+ * on a 6 GB box).
+ *
+ * `novelty` is intentionally ABSENT: classifying it needs the AEGIS vault
+ * history, and emitting a partial classification here would invite the model to
+ * read "not established" as "novel". The payload says where the full history
+ * lives instead.
+ */
+export interface BasicOnChainIntel {
+  address: string;
+  /** True when the RPC answered nothing — every field below is then UNKNOWN. */
+  unavailable: boolean;
+  /** EOA nonce = OUTGOING transactions only (incoming are not counted). */
+  nonce: number | null;
+  balanceBNB: number | null;
+  isContract: boolean;
+  eip7702Delegated: boolean;
+  codeSizeBytes: number | null;
+  /** Which fields the node actually answered. */
+  fields: string[];
+  fieldsUnavailable: string[];
+}
+
+export async function getBasicOnChainIntel(address: string): Promise<BasicOnChainIntel> {
+  const addr = address.toLowerCase() as `0x${string}`;
+  const [balRes, nonceRes, codeRes] = await Promise.allSettled([
+    publicClient.getBalance({ address: addr }),
+    publicClient.getTransactionCount({ address: addr }),
+    publicClient.getCode({ address: addr }),
+  ]);
+
+  const fields: string[] = [];
+  const fieldsUnavailable: string[] = [];
+
+  let balanceBNB: number | null = null;
+  if (balRes.status === "fulfilled") {
+    balanceBNB = Number(balRes.value) / 1e18;
+    fields.push("balance");
+  } else {
+    fieldsUnavailable.push("balance");
+  }
+
+  let nonce: number | null = null;
+  if (nonceRes.status === "fulfilled") {
+    nonce = Number(nonceRes.value);
+    fields.push("nonce");
+  } else {
+    fieldsUnavailable.push("nonce");
+  }
+
+  let isContract = false;
+  let eip7702Delegated = false;
+  let codeSizeBytes: number | null = null;
+  if (codeRes.status === "fulfilled") {
+    const code = codeRes.value ?? "0x";
+    ({ isContract, eip7702Delegated } = classifyCode(code));
+    // "0x" (an EOA) is 0 bytes, not UNKNOWN — the node answered.
+    codeSizeBytes = Math.max(0, (code.length - 2) / 2);
+    fields.push("code");
+  } else {
+    fieldsUnavailable.push("code");
+  }
+
+  if (fieldsUnavailable.length > 0) {
+    console.warn(
+      `[RPC]    Cheap intel unavailable for ${address}: ${fieldsUnavailable.join(", ")} — ` +
+        `those fields are UNKNOWN, not zero.`
+    );
+  }
+
+  return {
+    address,
+    unavailable: fields.length === 0,
+    nonce,
+    balanceBNB,
+    isContract,
+    eip7702Delegated,
+    codeSizeBytes,
+    fields,
+    fieldsUnavailable,
+  };
+}
+
+// ── Contract code info (tool: get_contract_code_info) ─────────────────────────
+/**
+ * Bytecode / proxy / verification state of an address.
+ *
+ * `sourceVerification` is hardcoded to "unknown" and that is the honest answer
+ * on BSC testnet: the explorer endpoint that serves verified source is deprecated
+ * for chain 97, and guessing "unverified" from an unreachable endpoint would be
+ * exactly the "unavailable became a verdict" bug this codebase keeps fixing.
+ */
+export interface ContractCodeInfo {
+  address: string;
+  unavailable: boolean;
+  /** Deployed bytecode size in bytes. 0 for an EOA. null when unreadable. */
+  codeSizeBytes: number | null;
+  isContract: boolean;
+  eip7702Delegated: boolean;
+  /** EIP-1967 implementation slot (or EIP-1822 legacy slot), when non-zero. */
+  proxyImplementation: `0x${string}` | null;
+  /** Heuristic: a standard proxy slot holds a non-zero address. */
+  isProxy: boolean;
+  /** False when the storage reads failed — then isProxy is UNKNOWN, not false. */
+  proxySlotsReadable: boolean;
+  sourceVerification: "unknown";
+  note: string;
+}
+
+/** EIP-1967 implementation slot. */
+const EIP1967_IMPL_SLOT =
+  "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc" as const;
+/** EIP-1967 beacon slot (UUPS proxies point here, not at the implementation). */
+const EIP1967_BEACON_SLOT =
+  "0xa3f0ad74e5423aebfd80d3ef4346578335a9a72aeaee59ff6cb3582b35133d50" as const;
+/** EIP-1822 (pre-1967 UUPS) slot — still deployed by some frameworks. */
+const EIP1822_PROXIABLE_SLOT =
+  "0xc5f16f0fcc639fa48a6947836d9850f504798523bf8c9a3a87d5876cf622bcf7" as const;
+
+const PROXY_SLOTS: Array<{ name: string; slot: `0x${string}` }> = [
+  { name: "eip1967_implementation", slot: EIP1967_IMPL_SLOT },
+  { name: "eip1967_beacon", slot: EIP1967_BEACON_SLOT },
+  { name: "eip1822_proxiable", slot: EIP1822_PROXIABLE_SLOT },
+];
+
+/** True when a storage slot holds something other than 31 zero bytes. */
+function slotHasValue(value: string | undefined | null): boolean {
+  if (!value) return false;
+  const hex = value.toLowerCase();
+  return hex.length > 2 && !/^0x0+$/.test(hex);
+}
+
+export async function getContractCodeInfo(address: string): Promise<ContractCodeInfo> {
+  const addr = address.toLowerCase() as `0x${string}`;
+
+  let code: string | undefined;
+  try {
+    code = await publicClient.getCode({ address: addr });
+  } catch (err) {
+    console.warn(
+      `[RPC]    eth_getCode failed for ${address} ` +
+        `(${err instanceof Error ? err.message : err}) — contract info UNKNOWN.`
+    );
+    return {
+      address,
+      unavailable: true,
+      codeSizeBytes: null,
+      isContract: false,
+      eip7702Delegated: false,
+      proxyImplementation: null,
+      isProxy: false,
+      proxySlotsReadable: false,
+      sourceVerification: "unknown",
+      note:
+        "The RPC node could not return the bytecode for this address. " +
+        "Contract status and proxy state are UNKNOWN — do NOT read this as 'not a contract'.",
+    };
+  }
+
+  const normalized = code ?? "0x";
+  const { isContract, eip7702Delegated } = classifyCode(normalized);
+  const codeSizeBytes = Math.max(0, (normalized.length - 2) / 2);
+
+  // An EOA (or a 7702 delegation) has no meaningful storage to inspect.
+  if (!isContract) {
+    return {
+      address,
+      unavailable: false,
+      codeSizeBytes,
+      isContract,
+      eip7702Delegated,
+      proxyImplementation: null,
+      isProxy: false,
+      proxySlotsReadable: true,
+      sourceVerification: "unknown",
+      note: eip7702Delegated
+        ? "This address is an EOA carrying an EIP-7702 delegation designator: its code is executed from a delegate contract. It is NOT a contract address, and no proxy storage applies."
+        : "No bytecode at this address: a plain EOA wallet. There is no contract, no proxy and no verified source.",
+    };
+  }
+
+  const reads = await Promise.allSettled(
+    PROXY_SLOTS.map((s) => publicClient.getStorageAt({ address: addr, slot: s.slot }))
+  );
+  let proxyImplementation: `0x${string}` | null = null;
+  let readable = 0;
+  reads.forEach((r) => {
+    if (r?.status === "fulfilled") {
+      readable += 1;
+      if (proxyImplementation === null && slotHasValue(r.value)) {
+        proxyImplementation = r.value as `0x${string}`;
+      }
+    }
+  });
+  const proxySlotsReadable = readable === PROXY_SLOTS.length;
+  const isProxy = readable > 0 && proxyImplementation !== null;
+
+  return {
+    address,
+    unavailable: false,
+    codeSizeBytes,
+    isContract,
+    eip7702Delegated,
+    proxyImplementation,
+    isProxy,
+    proxySlotsReadable,
+    sourceVerification: "unknown",
+    note:
+      "Verified-source status is UNKNOWN on BSC testnet: the explorer endpoint that serves it is " +
+      "not available, so this tool deliberately does not claim 'verified' or 'unverified'. " +
+      (isProxy
+        ? " A standard proxy slot (EIP-1967 / EIP-1822) is non-zero, which means this contract " +
+          "delegates its logic elsewhere — read the implementation address before judging it."
+        : " No standard proxy slot was non-zero. That is a heuristic, not a proof of absence: a " +
+          "custom proxy or a non-standard slot would not be detected.") +
+      (!proxySlotsReadable
+        ? " Some storage reads failed, so the proxy verdict above is UNKNOWN rather than false."
+        : ""),
+  };
+}
+
 // ── Main function ─────────────────────────────────────────────────────────────
 /**
  * Fetch on-chain intelligence for a given address from BscScan Testnet.
@@ -764,6 +1014,7 @@ export async function getOnChainIntel(address: string): Promise<OnChainIntel> {
 
     let isContract = isContractFromExplorer;
     let eip7702Delegated = false;
+    let delegateAddress: `0x${string}` | null = null;
 
     // ── Fallback & ground-truth via RPC node ──────────────────────────────────
     // The BscScan V1 explorer endpoint is deprecated and chain 97 is NOT in the
@@ -789,7 +1040,7 @@ export async function getOnChainIntel(address: string): Promise<OnChainIntel> {
     if (codeRes.status === "fulfilled" && codeRes.value !== undefined) {
       // getCode is the ground truth for contract status (more reliable than the
       // explorer ABI heuristic, which also dies once the endpoint is deprecated).
-      ({ isContract, eip7702Delegated } = classifyCode(codeRes.value));
+      ({ isContract, eip7702Delegated, delegateAddress } = classifyCode(codeRes.value));
     }
 
     // ── isNewWallet → honest novelty classification ───────────────────────────
@@ -809,6 +1060,7 @@ export async function getOnChainIntel(address: string): Promise<OnChainIntel> {
       walletAgeInDays,
       isContract,
       eip7702Delegated,
+      delegateAddress,
       balanceBNB,
       unavailable: allNull,
       aegisEscrowIn: vault.escrowIn,
@@ -902,6 +1154,7 @@ export function unknownIntel(): OnChainIntel {
     walletAgeInDays: null,
     isContract: false,
     eip7702Delegated: false,
+    delegateAddress: null,
     balanceBNB: null,
     unavailable: true,
     aegisEscrowIn: 0,
