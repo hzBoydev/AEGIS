@@ -1,0 +1,36 @@
+{
+  "version": "2026-10-04",
+  "notice": "LOCAL DENYLIST — GoPlus-independent. Every entry below is a PUBLICLY PUBLISHED address; none was invented. REFRESH BEFORE RELYING ON IT IN PRODUCTION: this file is a hand-maintained seed, it is not downloaded and it goes stale. Sources, in order of authority: (1) OFAC SDN list + the Federal Register notice of the 2022-08-08 Tornado Cash designation, https://ofac.treasury.gov/recent-actions and https://www.federalregister.gov/documents/2022/08/10/2022-17272 ; (2) a published EIP-7702 sweeper delegate if one is ever added here. IMPORTANT CAVEAT: the Tornado Cash contracts were designated in Aug 2022 and REMOVED from the SDN list in March 2025 after the Fifth Circuit held OFAC could not sanction them; they are kept here as a known-mixer reference, so an operator who must comply with a sanctions policy should re-check the current SDN list rather than trust this seed. To add an entry: {\"address\":\"0x…\",\"list\":\"ofac|drainer|sweeper7702|custom\",\"label\":\"…\"}. Only publish addresses you can cite.",
+  "entries": [
+    {
+      "address": "0x8589427373D6D84E98730D7795D8f6f8731FDA16",
+      "list": "ofac",
+      "label": "TORNADO CASH — primary ETH address listed in the OFAC SDN designation of 2022-08-08"
+    },
+    {
+      "address": "0x722122dF12D4e14e13Ac3b6895a86e84145b6967",
+      "list": "ofac",
+      "label": "TORNADO CASH — alt. ETH address listed in the OFAC SDN designation of 2022-08-08"
+    },
+    {
+      "address": "0xDD4c48C0B24039969fC16D1cdF626eaB821d3384",
+      "list": "ofac",
+      "label": "TORNADO CASH — alt. ETH address listed in the OFAC SDN designation of 2022-08-08"
+    },
+    {
+      "address": "0xd90e2f925DA726b50C4Ed8D0Fb90Ad053324F31b",
+      "list": "ofac",
+      "label": "TORNADO CASH ROUTER — ETH address listed in the OFAC SDN designation of 2022-08-08"
+    },
+    {
+      "address": "0x12D66f87A04A9E220743712cE6d9bB1B5616B8Fc",
+      "list": "ofac",
+      "label": "TORNADO CASH 0.1 ETH pool contract"
+    },
+    {
+      "address": "0xD4B88Df4D29F5CedD6857912842cff3b20C8Cfa3",
+      "list": "ofac",
+      "label": "TORNADO CASH 100 DAI pool contract"
+    }
+  ]
+}
