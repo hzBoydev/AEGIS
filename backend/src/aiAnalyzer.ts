@@ -162,7 +162,7 @@ export async function warmupOllama(): Promise<void> {
       try {
         const response = await fetch(`${config.OLLAMA_URL}/api/generate`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: config.OLLAMA_HEADERS,
           body: JSON.stringify({
             model: config.OLLAMA_MODEL,
             prompt: "OK",
@@ -406,7 +406,7 @@ async function ollamaGenerate(opts: {
     try {
       response = await fetch(`${config.OLLAMA_URL}/api/generate`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: config.OLLAMA_HEADERS,
         body: JSON.stringify({
           model: config.OLLAMA_MODEL,
           prompt: opts.prompt,

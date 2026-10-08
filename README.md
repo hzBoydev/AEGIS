@@ -774,7 +774,8 @@ Commonly tuned (all optional, defaults shown in `.env.example`):
 
 | Variable | Default | Purpose |
 |---|---|---|
-| OLLAMA_URL / OLLAMA_MODEL | `http://localhost:11434` / `qwen3:8b` | Local inference endpoint |
+| OLLAMA_URL / OLLAMA_MODEL | `http://localhost:11434` / `qwen3:8b` | Inference endpoint. For an always-on production LLM use `https://ollama.com` + `OLLAMA_API_KEY` + a cloud-hosted model (e.g. `gpt-oss:20b`) |
+| OLLAMA_API_KEY | empty (no auth) | Bearer token sent as `Authorization: Bearer …` on every Ollama call - required by `ollama.com`, ignored by a local daemon |
 | GOPLUS_API_KEY | empty (anonymous) | Higher GoPlus rate limit |
 | GOPLUS_SIMULATE | `true` | Demo-only simulated verdicts - set `false` outside demos |
 | LLM_CONFIDENCE_THRESHOLD / HUMAN_CONF_MIN | `0.80` / `0.55` | Auto-release and human-escalation floors |

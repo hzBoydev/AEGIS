@@ -314,7 +314,7 @@ export async function chat(
     try {
       response = await fetch(`${config.OLLAMA_URL}/api/chat`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: config.OLLAMA_HEADERS,
         body: JSON.stringify(body),
         signal: controller.signal,
       });

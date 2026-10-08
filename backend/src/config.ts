@@ -22,6 +22,17 @@ if (!RPC_URL || !CONTRACT_ADDRESS || !ORACLE_PRIVATE_KEY) {
 const OLLAMA_URL = process.env.OLLAMA_URL ?? "http://localhost:11434";
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL ?? "qwen3:8b";
 /**
+ * Bearer token for a hosted Ollama endpoint (https://ollama.com/api). Local
+ * daemons have no auth, so the value is optional and the header is only added
+ * when it is set — one code path serves both. Never logged, never returned by
+ * any route.
+ */
+const OLLAMA_API_KEY = process.env.OLLAMA_API_KEY ?? "";
+const OLLAMA_HEADERS: Record<string, string> = Object.freeze({
+  "Content-Type": "application/json",
+  ...(OLLAMA_API_KEY ? { Authorization: `Bearer ${OLLAMA_API_KEY}` } : {}),
+});
+/**
  * Timeout in ms for a single Ollama generate call. Default: 120 s.
  *
  * Budget, not a wish: qwen3:8b on a 6 GB card is PARTIALLY offloaded to CPU
@@ -463,6 +474,8 @@ export const walletClient: WalletClient<any, any, any> = createWalletClient({
 export const config = {
   CONTRACT_ADDRESS,
   OLLAMA_URL,
+  OLLAMA_API_KEY,
+  OLLAMA_HEADERS,
   OLLAMA_MODEL,
   OLLAMA_TIMEOUT_MS,
   OLLAMA_EXPLAIN_TIMEOUT_MS,
